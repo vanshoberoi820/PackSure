@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Base Styles ─── */
+* {
+  -webkit-tap-highlight-color: transparent;
+  box-sizing: border-box;
+}
+
+html {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900 min-h-screen;
+  overscroll-behavior: none;
+}
+
+/* ─── Mobile Container ─── */
+.mobile-container {
+  @apply max-w-md mx-auto min-h-screen bg-white relative;
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.06);
+}
+
+/* ─── Card Styles ─── */
+.card {
+  @apply bg-white rounded-2xl p-4 shadow-sm border border-gray-100;
+}
+
+.card-elevated {
+  @apply bg-white rounded-2xl p-4 shadow-md border border-gray-50;
+}
+
+/* ─── Button Styles ─── */
+.btn-primary {
+  @apply w-full py-3.5 bg-primary-600 text-white font-semibold rounded-xl
+         hover:bg-primary-700 active:scale-[0.98] transition-all duration-150
+         disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2;
+}
+
+.btn-secondary {
+  @apply w-full py-3 bg-gray-100 text-gray-700 font-medium rounded-xl
+         hover:bg-gray-200 active:scale-[0.98] transition-all duration-150
+         flex items-center justify-center gap-2;
+}
+
+.btn-outline {
+  @apply w-full py-3 bg-white text-primary-600 font-medium rounded-xl
+         border-2 border-primary-200 hover:bg-primary-50
+         active:scale-[0.98] transition-all duration-150
+         flex items-center justify-center gap-2;
+}
+
+.btn-danger {
+  @apply w-full py-3 bg-rose-50 text-rose-600 font-medium rounded-xl
+         border border-rose-200 hover:bg-rose-100
+         active:scale-[0.98] transition-all duration-150
+         flex items-center justify-center gap-2;
+}
+
+/* ─── Status Colors ─── */
+.status-compliant { @apply text-emerald-600 bg-emerald-50 border-emerald-200; }
+.status-warning { @apply text-amber-600 bg-amber-50 border-amber-200; }
+.status-violation { @apply text-rose-600 bg-rose-50 border-rose-200; }
+
+/* ─── Score Circle Animation ─── */
+.score-circle-track {
+  stroke: #e5e7eb;
+  fill: none;
+}
+
+.score-circle-fill {
+  fill: none;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 1.5s ease-out;
+}
+
+/* ─── Processing Steps ─── */
+@keyframes stepPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+.step-active {
+  animation: stepPulse 1.2s ease-in-out infinite;
+}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar { width: 0; height: 0; }
+
+/* ─── Bottom nav safe area ─── */
+.pb-nav { padding-bottom: 5.5rem; }

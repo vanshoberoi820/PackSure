@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#2563eb" />
+    <meta name="description" content="PackSure — Smart Packaging Compliance powered by Legal Metrology Rules 2011" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+    <title>PackSure — Smart Packaging Compliance</title>
+    <style>
+      /* Splash screen while React loads */
+      #splash {
+        position: fixed; inset: 0;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        background: linear-gradient(135deg, #1e40af 0%, #2563eb 50%, #3b82f6 100%);
+        color: white; font-family: 'Inter', sans-serif; z-index: 9999;
+        transition: opacity 0.3s ease;
+      }
+      #splash.hidden { opacity: 0; pointer-events: none; }
+      #splash h1 { font-size: 28px; font-weight: 700; margin: 0; letter-spacing: -0.5px; }
+      #splash p { font-size: 14px; font-weight: 400; margin-top: 8px; opacity: 0.8; }
+      #splash .dot-loader { display: flex; gap: 6px; margin-top: 32px; }
+      #splash .dot-loader span {
+        width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,0.6);
+        animation: dotPulse 1.2s ease-in-out infinite;
+      }
+      #splash .dot-loader span:nth-child(2) { animation-delay: 0.2s; }
+      #splash .dot-loader span:nth-child(3) { animation-delay: 0.4s; }
+      @keyframes dotPulse {
+        0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+        40% { transform: scale(1); opacity: 1; }
+      }
+    </style>
+  </head>
+  <body class="bg-gray-50">
+    <div id="splash">
+      <h1>PackSure</h1>
+      <p>Smart Packaging Compliance</p>
+      <div class="dot-loader"><span></span><span></span><span></span></div>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
