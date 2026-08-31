@@ -1,7 +1,10 @@
+import { evaluateCompliance } from '../engine/complianceEngine';
+
 /* ─────────────────────────────────────────────
    Demo Data — Reliable demonstration fallback
    Provides pre-computed inspection data for SIH demo
    ───────────────────────────────────────────── */
+
 
 /** Pre-built OCR text simulating a real product label scan */
 export const DEMO_OCR_TEXT = `NATURE'S BEST
@@ -130,44 +133,8 @@ export const DEMO_DECLARATIONS = [
 ];
 
 /** Pre-built compliance result for the demo */
-export const DEMO_COMPLIANCE = {
-  overallScore: 67,
-  status: 'needs_review',
-  categories: {
-    mandatory: { score: 68, label: 'Mandatory Declarations' },
-    readability: { score: 80, label: 'Readability' },
-    formatting: { score: 85, label: 'Formatting' },
-  },
-  violations: [
-    {
-      field: 'consumerCare',
-      label: 'Consumer Care Details',
-      severity: 'medium',
-      status: 'not_detected',
-      message:
-        'Consumer care / grievance redressal details were not detected on the package label. This is a mandatory declaration under Rule 6 of the Legal Metrology (Packaged Commodities) Rules, 2011.',
-      confidence: 91,
-    },
-    {
-      field: 'unitSalePrice',
-      label: 'Unit Sale Price',
-      severity: 'medium',
-      status: 'not_detected',
-      message:
-        'Unit sale price was not detected. As per Rule 6(11), the unit sale price per standard unit of measurement must be declared on pre-packaged commodities.',
-      confidence: 88,
-    },
-    {
-      field: 'importer',
-      label: 'Importer',
-      severity: 'low',
-      status: 'not_detected',
-      message:
-        'Importer information was not detected. This is required only for imported products. If this is a domestic product, this can be disregarded.',
-      confidence: 85,
-    },
-  ],
-};
+export const DEMO_COMPLIANCE = evaluateCompliance(DEMO_DECLARATIONS, 82);
+
 
 /** Demo e-commerce listing for comparison */
 export const DEMO_ECOMMERCE_DECLARATIONS = [
