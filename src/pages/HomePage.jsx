@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { getStats, getInspections } from '../utils/storage';
 import StatusBadge from '../components/StatusBadge';
+import logo from '../assets/logo.png';
 import {
   ScanLine,
   ClipboardCheck,
@@ -35,12 +36,17 @@ export default function HomePage() {
             </div>
             <div>
               <p className="text-primary-100 text-xs font-medium">PackSure</p>
-              <p className="text-white text-sm font-semibold">Inspector Dashboard</p>
+              <p className="text-white text-sm font-semibold">Not just label inspection — legal compliance verification.
+              </p>
             </div>
           </div>
-          <div className="w-10 h-10 bg-white/15 rounded-full flex items-center justify-center text-white text-sm font-bold">
-            RK
-          </div>
+          <button
+            onClick={() => navigate('/profile')}
+            className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-md overflow-hidden p-1 border-2 border-white/60 hover:scale-105 active:scale-95 transition-all"
+            title="Profile & Settings"
+          >
+            <img src={logo} alt="PackSure Logo" className="w-full h-full object-contain" />
+          </button>
         </div>
 
         <h1 className="text-2xl font-bold text-white">{greeting()} 👋</h1>

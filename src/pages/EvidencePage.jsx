@@ -92,16 +92,21 @@ export default function EvidencePage() {
                     <div className="bg-slate-50 p-2.5 rounded text-sm text-slate-800 font-medium mb-3 border border-slate-100 break-words">
                       {dec.value}
                     </div>
-                    <div className="flex items-center space-x-2 text-xs">
-                      <span className="text-slate-500 w-24">AI Confidence:</span>
-                      <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
-                        <div 
-                          className={`h-full rounded-full ${dec.confidence > 0.8 ? 'bg-green-500' : dec.confidence > 0.6 ? 'bg-amber-400' : 'bg-red-400'}`}
-                          style={{ width: `${(dec.confidence * 100).toFixed(0)}%` }}
-                        />
-                      </div>
-                      <span className="text-slate-600 font-medium w-9 text-right">{(dec.confidence * 100).toFixed(0)}%</span>
-                    </div>
+                    {(() => {
+                      const confVal = dec.confidence > 1 ? Math.round(dec.confidence) : Math.round((dec.confidence || 0) * 100);
+                      return (
+                        <div className="flex items-center space-x-2 text-xs">
+                          <span className="text-slate-500 w-24">AI Confidence:</span>
+                          <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                            <div 
+                              className={`h-full rounded-full ${confVal >= 80 ? 'bg-green-500' : confVal >= 50 ? 'bg-amber-400' : 'bg-red-400'}`}
+                              style={{ width: `${confVal}%` }}
+                            />
+                          </div>
+                          <span className="text-slate-600 font-medium w-9 text-right">{confVal}%</span>
+                        </div>
+                      );
+                    })()}
                   </>
                 ) : (
                   <div className="mt-2 bg-amber-50 border border-amber-100 rounded-lg p-3 flex items-start">

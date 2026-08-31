@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { User, Settings, Bell, Moon, Globe, Info, LogOut, Shield, Award, ChevronRight } from 'lucide-react';
 import { getStats } from '../utils/storage';
+import logo from '../assets/logo.png';
 
 export default function ProfilePage() {
   const navigate = useNavigate();
@@ -29,8 +30,8 @@ export default function ProfilePage() {
       {/* Profile Header */}
       <div className="bg-white pt-8 pb-6 px-4 border-b border-slate-200 shadow-sm">
         <div className="flex items-center space-x-4 mb-6">
-          <div className="w-20 h-20 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-full flex items-center justify-center text-white text-2xl font-bold shadow-lg border-4 border-blue-50">
-            RK
+          <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-lg border-4 border-blue-50 overflow-hidden p-2">
+            <img src={logo} alt="PackSure Logo" className="w-full h-full object-contain" />
           </div>
           <div>
             <h1 className="text-xl font-bold text-slate-900">Rajesh Kumar</h1>

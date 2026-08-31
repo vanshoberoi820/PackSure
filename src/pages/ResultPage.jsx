@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, FileText, CheckCircle, ShieldAlert, ArrowRight, ShieldCheck, ShoppingCart } from 'lucide-react';
+import { ArrowLeft, FileText, CheckCircle, ShieldAlert, ArrowRight, ShieldCheck, ShoppingCart, Calendar, Clock } from 'lucide-react';
 import { getInspection } from '../utils/storage';
 import { generateReport } from '../engine/reportEngine';
+import { evaluateDateCompliance } from '../engine/complianceEngine';
 import ScoreCircle from '../components/ScoreCircle';
 import DeclarationCard from '../components/DeclarationCard';
 import StatusBadge from '../components/StatusBadge';
+
 
 export default function ResultPage() {
   const { id } = useParams();
@@ -120,6 +122,88 @@ export default function ResultPage() {
           </div>
         )}
 
+        {/* Date & Expiry Assessment */}
+        {(() => {
+          const dateAssessment = compliance.dateAssessment || evaluateDateCompliance(
+            declarations.find(d => d.field === 'manufacturingDate'),
+            declarations.find(d => d.field === 'bestBefore')
+          );
+
+          if (!dateAssessment || (!dateAssessment.mfgDate && !dateAssessment.expiryDate)) return null;
+
+          return (
+            <div className="card p-4 border border-blue-100 bg-gradient-to-br from-white via-white to-blue-50/40 shadow-sm space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-blue-50 border border-blue-200/60 flex items-center justify-center text-blue-600 shadow-xs">
+                    <Calendar className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-gray-900 leading-tight">Date & Expiry Engine</h3>
+                    <p className="text-[10px] text-gray-500 font-medium">Legal Metrology Rule 6(1)(d)</p>
+                  </div>
+                </div>
+
+                <span
+                  className={`text-[10px] font-bold px-2.5 py-1 rounded-full border shadow-xs ${
+                    dateAssessment.isExpired
+                      ? 'bg-rose-50 text-rose-700 border-rose-200'
+                      : dateAssessment.isNearExpiry
+                      ? 'bg-amber-50 text-amber-700 border-amber-200'
+                      : dateAssessment.isFutureDated
+                      ? 'bg-purple-50 text-purple-700 border-purple-200'
+                      : dateAssessment.expiryStatus === 'safe'
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                      : 'bg-gray-50 text-gray-600 border-gray-200'
+                  }`}
+                >
+                  {dateAssessment.isExpired
+                    ? '⚠️ EXPIRED'
+                    : dateAssessment.isNearExpiry
+                    ? '⏳ NEAR EXPIRY'
+                    : dateAssessment.isFutureDated
+                    ? '🚫 POST-DATED'
+                    : dateAssessment.expiryStatus === 'safe'
+                    ? '✓ ACTIVE & SAFE'
+                    : 'DATE UNVERIFIED'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-gray-100 text-xs">
+                <div className="bg-gray-50/70 p-2.5 rounded-xl border border-gray-100/80">
+                  <span className="text-[10px] text-gray-400 font-semibold block uppercase tracking-wider">Mfg / Pkg Date</span>
+                  <span className="text-sm font-bold text-gray-800 mt-0.5 block truncate">
+                    {dateAssessment.mfgDate || 'Not Detected'}
+                  </span>
+                </div>
+
+                <div className="bg-gray-50/70 p-2.5 rounded-xl border border-gray-100/80">
+                  <span className="text-[10px] text-gray-400 font-semibold block uppercase tracking-wider">
+                    {dateAssessment.isComputedExpiry ? 'Computed Expiry' : 'Best Before / Exp'}
+                  </span>
+                  <span className="text-sm font-bold text-gray-800 mt-0.5 block truncate">
+                    {dateAssessment.expiryDate || 'Not Detected'}
+                  </span>
+                </div>
+              </div>
+
+              {dateAssessment.shelfLife && (
+                <div className="text-[11px] text-gray-500 flex items-center gap-1.5 pt-0.5">
+                  <Clock className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
+                  <span className="truncate">
+                    Shelf Life: <strong className="text-gray-700 font-semibold">{dateAssessment.shelfLife}</strong>
+                    {dateAssessment.daysToExpiry !== null && (
+                      <span className="ml-1.5 text-gray-400">
+                        ({dateAssessment.daysToExpiry > 0 ? `${dateAssessment.daysToExpiry} days remaining` : `${Math.abs(dateAssessment.daysToExpiry)} days expired`})
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Detected Declarations */}
         <div className="space-y-3">
           <h2 className="text-base font-bold text-gray-900">Detected Declarations</h2>
@@ -133,6 +217,7 @@ export default function ResultPage() {
             ))}
           </div>
         </div>
+
 
         {/* E-commerce Comparison Promo */}
         <div className="card bg-gradient-to-r from-primary-50 to-blue-50/50 border-primary-100 p-4 flex items-center justify-between gap-4">

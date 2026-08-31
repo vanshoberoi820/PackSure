@@ -50,10 +50,10 @@ export default function OfficerReviewPage() {
     // Pre-populate decisions based on AI status
     const initialDecisions = {};
     data.declarations.forEach(dec => {
-      if (dec.status === 'compliant') {
+      if (dec.status === 'detected') {
         initialDecisions[dec.field] = 'confirm';
       }
-      // For violations/needs_review, leave undefined to force explicit decision
+      // For not_detected / needs_review, leave undefined to force explicit officer review
     });
     setDecisions(initialDecisions);
   };
@@ -78,7 +78,6 @@ export default function OfficerReviewPage() {
       };
       
       await updateInspection(inspection.id, updatedData);
-      // Optional: Add toast success here
       navigate(`/result/${inspection.id}`);
     } catch (err) {
       console.error('Failed to complete review:', err);
@@ -92,8 +91,9 @@ export default function OfficerReviewPage() {
   if (!inspection) return <div className="p-4 text-center text-red-500">Inspection not found</div>;
 
   const itemsToReview = inspection.declarations?.filter(d => 
-    d.status === 'violation' || d.status === 'needs_review' || decisions[d.field] !== 'confirm'
+    d.status === 'not_detected' || d.status === 'needs_review' || decisions[d.field] !== 'confirm'
   ) || [];
+
 
   return (
     <div className="max-w-md mx-auto min-h-screen bg-slate-50 pb-24">
@@ -150,9 +150,9 @@ export default function OfficerReviewPage() {
                   <div className="flex justify-between items-start mb-2">
                     <span className="font-bold text-slate-800">{dec.label}</span>
                     <span className={`text-xs font-bold px-2 py-0.5 rounded-full uppercase ${
-                      dec.status === 'violation' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                      dec.status === 'not_detected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
                     }`}>
-                      {dec.status.replace('_', ' ')}
+                      {dec.status === 'not_detected' ? 'Not Detected' : dec.status === 'needs_review' ? 'Needs Review' : 'Detected'}
                     </span>
                   </div>
                   
@@ -162,7 +162,9 @@ export default function OfficerReviewPage() {
                       {dec.status === 'not_detected' ? <span className="italic text-slate-400">Not Detected</span> : dec.value}
                     </div>
                     {dec.status !== 'not_detected' && (
-                      <div className="text-xs text-slate-500 mt-2">AI Confidence: {(dec.confidence * 100).toFixed(0)}%</div>
+                      <div className="text-xs text-slate-500 mt-2">
+                        AI Confidence: {dec.confidence > 1 ? Math.round(dec.confidence) : Math.round((dec.confidence || 0) * 100)}%
+                      </div>
                     )}
                   </div>
 
