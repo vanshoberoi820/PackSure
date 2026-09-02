@@ -121,7 +121,11 @@ export async function generateReport(inspection) {
   }
 
   /* ── Declarations Table ── */
-  if (inspection.declarations?.length > 0) {
+  const reportDeclarations = (inspection.declarations || []).filter(
+    (decl) => decl.field !== 'fssaiLicense'
+  );
+
+  if (reportDeclarations.length > 0) {
     if (y > 230) { doc.addPage(); y = 15; }
 
     doc.setFont('helvetica', 'bold');
@@ -146,11 +150,11 @@ export async function generateReport(inspection) {
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(51, 65, 85);
 
-    for (const decl of inspection.declarations) {
+    for (const decl of reportDeclarations) {
       if (y > 275) { doc.addPage(); y = 15; }
 
-      const statusIcon = decl.status === 'detected' ? '[OK]' : decl.status === 'needs_review' ? '[?]' : '[X]';
-      const statusColor = decl.status === 'detected' ? [22, 163, 74] : decl.status === 'needs_review' ? [245, 158, 11] : [239, 68, 68];
+      const statusIcon = decl.status === 'detected' ? '[OK]' : decl.status === 'not_applicable' ? '[N/A]' : decl.status === 'needs_review' ? '[?]' : '[X]';
+      const statusColor = decl.status === 'detected' ? [22, 163, 74] : decl.status === 'not_applicable' ? [100, 116, 139] : decl.status === 'needs_review' ? [245, 158, 11] : [239, 68, 68];
 
       doc.setTextColor(51, 65, 85);
       doc.text(decl.label, 16, y, { maxWidth: 60 });
@@ -167,20 +171,24 @@ export async function generateReport(inspection) {
   }
 
   /* ── Violations ── */
-  if (inspection.compliance?.violations?.length > 0) {
+  const reportViolations = (inspection.compliance?.violations || []).filter(
+    (v) => v.field !== 'fssaiLicense'
+  );
+
+  if (reportViolations.length > 0) {
     if (y > 230) { doc.addPage(); y = 15; }
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(13);
     doc.setTextColor(239, 68, 68);
-    doc.text(`Potential Issues (${inspection.compliance.violations.length})`, 14, y);
+    doc.text(`Potential Issues (${reportViolations.length})`, 14, y);
     y += 2;
     doc.setDrawColor(239, 68, 68);
     doc.line(14, y, 60, y);
     y += 6;
 
     doc.setFontSize(9);
-    for (const v of inspection.compliance.violations) {
+    for (const v of reportViolations) {
       if (y > 270) { doc.addPage(); y = 15; }
 
       doc.setFont('helvetica', 'bold');

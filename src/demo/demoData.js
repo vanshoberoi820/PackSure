@@ -133,7 +133,7 @@ export const DEMO_DECLARATIONS = [
 ];
 
 /** Pre-built compliance result for the demo */
-export const DEMO_COMPLIANCE = evaluateCompliance(DEMO_DECLARATIONS, 82);
+export const DEMO_COMPLIANCE = evaluateCompliance(DEMO_DECLARATIONS, 82, DEMO_OCR_TEXT);
 
 
 /** Demo e-commerce listing for comparison */

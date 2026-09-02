@@ -11,12 +11,112 @@ const MANDATORY_FIELDS = [
   { field: 'manufacturer', weight: 15, severity: 'high' },
   { field: 'netQuantity', weight: 15, severity: 'high' },
   { field: 'mrp', weight: 15, severity: 'high' },
-  { field: 'manufacturingDate', weight: 10, severity: 'medium' },
+  { field: 'manufacturingDate', weight: 15, severity: 'high' },
   { field: 'consumerCare', weight: 10, severity: 'medium' },
-  { field: 'countryOfOrigin', weight: 8, severity: 'medium' },
-  { field: 'bestBefore', weight: 7, severity: 'low' },
-  { field: 'fssaiLicense', weight: 5, severity: 'low' },
+  { field: 'countryOfOrigin', weight: 10, severity: 'medium' },
+  { field: 'bestBefore', weight: 10, severity: 'medium', conditional: true },
 ];
+
+/**
+ * Identify commodity category and determine whether Best Before / Expiry Date is legally applicable.
+ * Under Legal Metrology (Packaged Commodities) Rules, 2011, Rule 6(1)(d) proviso:
+ * Best Before / Expiry is mandatory only for commodities which may become unfit for human consumption
+ * or lose efficacy over time (food, beverages, edible items, pharma, cosmetics, chemicals).
+ * Non-perishable / durable commodities are legally exempt.
+ * 
+ * @param {string} productName
+ * @param {string} rawText
+ * @returns {{ isExpiryApplicable: boolean, category: string, categoryName: string, reason: string }}
+ */
+export function identifyCommodityCategory(productName = '', rawText = '') {
+  const text = `${productName} ${rawText}`.toLowerCase();
+
+  // 1. Food & Perishable Consumable Keywords
+  const foodKeywords = [
+    'rice', 'wheat', 'flour', 'atta', 'maida', 'besan', 'dal', 'pulse', 'grain', 'cereal',
+    'biscuit', 'cookie', 'bread', 'cake', 'bakery', 'snack', 'chips', 'namkeen', 'noodle', 'pasta',
+    'milk', 'dairy', 'butter', 'cheese', 'paneer', 'ghee', 'curd', 'yogurt', 'cream',
+    'oil', 'edible', 'mustard', 'sunflower', 'olive', 'spice', 'masala', 'turmeric', 'chilli',
+    'coriander', 'salt', 'sugar', 'jaggery', 'tea', 'coffee', 'juice', 'beverage', 'drink', 'water',
+    'soda', 'syrup', 'squash', 'chocolate', 'candy', 'sweet', 'confectionery', 'honey', 'jam',
+    'sauce', 'ketchup', 'pickle', 'meat', 'chicken', 'fish', 'egg', 'seafood', 'frozen', 'almond',
+    'cashew', 'raisin', 'nut', 'ingredient', 'ingredients', 'nutrition', 'nutritional', 'fssai',
+    'vegetarian', 'non-vegetarian', 'protein', 'fat', 'carbohydrate', 'flavor', 'flavour'
+  ];
+
+  // 2. Cosmetics, Pharma, Healthcare, Chemical Consumables
+  const cosmeticPharmaKeywords = [
+    'cream', 'lotion', 'serum', 'shampoo', 'conditioner', 'face wash', 'body wash', 'soap',
+    'sunscreen', 'hair oil', 'perfume', 'deodorant', 'deo', 'toothpaste', 'mouthwash',
+    'tablet', 'capsule', 'syrup', 'ointment', 'medicine', 'drug', 'pharmaceutical', 'antiseptic',
+    'vitamin', 'supplement', 'ayurvedic', 'herbal', 'sanitizer', 'disinfectant', 'detergent',
+    'pesticide', 'insecticide', 'battery', 'chemical'
+  ];
+
+  // 3. Durable & Non-Perishable Keywords (Exempt from Expiry)
+  const nonPerishableKeywords = [
+    'cable', 'charger', 'adapter', 'usb', 'headphone', 'earphone', 'earbuds', 'mouse', 'keyboard',
+    'led', 'bulb', 'wire', 'phone', 'laptop', 'camera', 'electronic', 'appliance', 'hardware',
+    'shirt', 't-shirt', 'tshirt', 'trousers', 'jeans', 'pant', 'socks', 'garment', 'apparel', 'textile',
+    'fabric', 'cotton', 'silk', 'polyester', 'wool', 'shoe', 'shoes', 'footwear', 'sandal', 'slipper',
+    'pen', 'pencil', 'notebook', 'eraser', 'sharpener', 'ruler', 'scale', 'scissor', 'paper', 'stationery',
+    'book', 'stapler', 'folder', 'envelope', 'cookware', 'pan', 'pot', 'utensil', 'plate', 'spoon',
+    'fork', 'knife', 'steel', 'plastic container', 'bucket', 'bottle', 'mug', 'cup', 'glassware',
+    'screw', 'tool', 'screwdriver', 'wrench', 'bag', 'backpack', 'wallet', 'belt', 'luggage',
+    'suitcase', 'toy', 'board game', 'furniture', 'cushion'
+  ];
+
+  // Match Food
+  const hasFood = foodKeywords.some(kw => new RegExp(`\\b${kw}\\b`, 'i').test(text));
+  if (hasFood) {
+    return {
+      isExpiryApplicable: true,
+      category: 'food_beverage',
+      categoryName: 'Food & Beverage',
+      reason: 'Food & edible commodities can become unfit for consumption and mandate Best Before / Expiry declaration under Rule 6(1)(d) proviso.',
+    };
+  }
+
+  // Match Pharma / Cosmetics
+  const hasCosmeticPharma = cosmeticPharmaKeywords.some(kw => new RegExp(`\\b${kw}\\b`, 'i').test(text));
+  if (hasCosmeticPharma) {
+    return {
+      isExpiryApplicable: true,
+      category: 'pharma_cosmetic',
+      categoryName: 'Cosmetics / Pharma / Consumable',
+      reason: 'Cosmetics, health, and chemical products have active ingredient efficacy and mandate an Expiry / Use-by date.',
+    };
+  }
+
+  // Match Non-perishable
+  const hasNonPerishable = nonPerishableKeywords.some(kw => new RegExp(`\\b${kw}\\b`, 'i').test(text));
+  if (hasNonPerishable) {
+    return {
+      isExpiryApplicable: false,
+      category: 'non_perishable_durable',
+      categoryName: 'Non-Perishable / Durable Commodity',
+      reason: 'Durable & non-perishable commodities are exempt from Best Before / Expiry declaration under Legal Metrology Rule 6(1)(d) proviso.',
+    };
+  }
+
+  // Heuristic: If OCR text mentions explicit expiry cues or ingredients, treat as perishable
+  if (/(?:ingredient|best\s*before|use\s*by|expiry|exp\.|nutrition|dietary)/i.test(text)) {
+    return {
+      isExpiryApplicable: true,
+      category: 'consumable',
+      categoryName: 'Consumable Commodity',
+      reason: 'Packaging indicates consumable ingredients or expiry cues requiring date verification under Rule 6(1)(d).',
+    };
+  }
+
+  // Default for non-food manufactured goods
+  return {
+    isExpiryApplicable: false,
+    category: 'general_manufactured',
+    categoryName: 'General Manufactured Commodity',
+    reason: 'Standard non-perishable manufactured commodity where Best Before / Expiry is not required under Rule 6(1)(d).',
+  };
+}
 
 const MONTH_NAMES = {
   jan: 0, january: 0,
@@ -157,18 +257,25 @@ function formatDateDisplay(d, hasDay = false) {
 
 /**
  * Date & Expiry Engine: Evaluate manufacturing date, shelf life, expiration status, and format conformity.
+ * Implements category applicability logic under Rule 6(1)(d):
+ * - If commodity is not perishable -> Best Before is Not Applicable (no violation if missing).
+ * - If commodity is perishable -> Best Before is checked (Present -> Compliant/Safe, Missing -> Potential Violation).
+ * 
  * @param {Object} mfgDecl - Manufacturing date declaration object
  * @param {Object} expDecl - Best before / Expiry date declaration object
  * @param {Date} referenceDate - Current audit date (default: new Date())
+ * @param {Object} commodityInfo - Category assessment from identifyCommodityCategory
  * @returns {Object} Full date assessment results & violations
  */
-export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Date()) {
+export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Date(), commodityInfo = null) {
   const violations = [];
   let mfgParsed = null;
   let computedExpiry = null;
-  let expiryStatus = 'unknown'; // 'safe', 'near_expiry', 'expired', 'unknown', 'future_dated'
+  let expiryStatus = 'unknown'; // 'safe', 'near_expiry', 'expired', 'not_applicable', 'future_dated', 'unknown'
   let daysToExpiry = null;
   let shelfLifeText = null;
+
+  const isApplicable = commodityInfo ? commodityInfo.isExpiryApplicable : true;
 
   // 1. Evaluate Manufacturing Date
   if (mfgDecl && mfgDecl.value && mfgDecl.status !== 'not_detected') {
@@ -176,7 +283,6 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
 
     if (mfgParsed && mfgParsed.isValid) {
       // Check for Future Manufacturing Date (Post-dating Fraud)
-      // Allow slight 3-day buffer for timezone / clock variations
       const bufferDate = new Date(referenceDate.getTime() + 3 * 24 * 60 * 60 * 1000);
       if (mfgParsed.date > bufferDate) {
         expiryStatus = 'future_dated';
@@ -202,12 +308,17 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
     }
   }
 
-  // 2. Evaluate Best Before / Expiry Date
-  if (expDecl && expDecl.value && expDecl.status !== 'not_detected') {
+  // 2. Evaluate Best Before / Expiry Date (Conditional on Category Applicability)
+  const hasExpValue = expDecl && expDecl.value && expDecl.status !== 'not_detected' && expDecl.status !== 'not_applicable';
+
+  if (!isApplicable && !hasExpValue) {
+    // Non-perishable commodity and no expiry date declared -> NOT APPLICABLE (Compliant / Exempt)
+    expiryStatus = 'not_applicable';
+  } else if (hasExpValue) {
+    // Date is Present -> Check shelf life calculation & direct parsing
     const shelfLife = parseShelfLifeDuration(expDecl.value);
 
     if (shelfLife && mfgParsed && mfgParsed.isValid) {
-      // Calculate expiry date from Mfg Date + Shelf Life Duration
       shelfLifeText = expDecl.value;
       const expDate = new Date(mfgParsed.date.getTime());
       if (shelfLife.type === 'days') {
@@ -221,7 +332,6 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
         isComputed: true,
       };
     } else {
-      // Check if expDecl is an explicit date string (e.g. "03/2027" or "15/09/2026")
       const directExpParsed = parseDateString(expDecl.value);
       if (directExpParsed && directExpParsed.isValid) {
         computedExpiry = {
@@ -233,7 +343,7 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
     }
   }
 
-  // 3. Expiration Risk Calculation
+  // 3. Expiration Risk Calculation (When date is present)
   if (computedExpiry && computedExpiry.date) {
     const diffTime = computedExpiry.date.getTime() - referenceDate.getTime();
     daysToExpiry = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -263,6 +373,9 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
         expiryStatus = 'safe';
       }
     }
+  } else if (isApplicable && (!expDecl || expDecl.status === 'not_detected')) {
+    // Perishable commodity where Best Before is Missing -> Potential Violation
+    expiryStatus = 'unknown';
   }
 
   return {
@@ -276,6 +389,10 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
     isExpired: expiryStatus === 'expired',
     isNearExpiry: expiryStatus === 'near_expiry',
     isFutureDated: expiryStatus === 'future_dated',
+    isNotApplicable: expiryStatus === 'not_applicable',
+    isExpiryApplicable: isApplicable,
+    commodityCategory: commodityInfo?.categoryName || 'General Commodity',
+    applicabilityReason: commodityInfo?.reason || '',
     violations,
   };
 }
@@ -284,20 +401,57 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
  * Evaluate compliance of extracted declarations.
  * @param {Array} declarations — from extractDeclarations()
  * @param {number} ocrConfidence — overall OCR confidence (0-100)
- * @returns {{ overallScore, status, categories, violations, dateAssessment }}
+ * @param {string} rawOcrText — full OCR text for commodity classification
+ * @returns {{ overallScore, status, categories, violations, dateAssessment, commodityInfo }}
  */
-export function evaluateCompliance(declarations, ocrConfidence = 70) {
+export function evaluateCompliance(declarations, ocrConfidence = 70, rawOcrText = '') {
   const declMap = {};
   declarations.forEach((d) => { declMap[d.field] = d; });
 
-  /* ── 1. Mandatory Declarations Score ── */
+  // 1. Identify Commodity Category & Expiry Applicability
+  const productName = declMap['productName']?.value || '';
+  const commodityInfo = identifyCommodityCategory(productName, rawOcrText);
+
+  // 2. Date & Expiry Engine Assessment
+  const mfgDecl = declMap['manufacturingDate'];
+  const expDecl = declMap['bestBefore'];
+  const dateAssessment = evaluateDateCompliance(mfgDecl, expDecl, new Date(), commodityInfo);
+
+  /* ── 3. Mandatory Declarations Score ── */
   let mandatoryEarned = 0;
   let mandatoryTotal = 0;
   const violations = [];
 
   for (const rule of MANDATORY_FIELDS) {
-    mandatoryTotal += rule.weight;
     const decl = declMap[rule.field];
+
+    // Conditional check for Best Before based on commodity category
+    if (rule.field === 'bestBefore') {
+      mandatoryTotal += rule.weight;
+      if (!commodityInfo.isExpiryApplicable) {
+        // Exempt / Non-perishable commodity -> Award full credit, mark declaration as Not Applicable
+        mandatoryEarned += rule.weight;
+        if (decl && decl.status === 'not_detected') {
+          decl.status = 'not_applicable';
+          decl.value = 'Not Applicable (Non-perishable)';
+        }
+        continue;
+      }
+      // If applicable and missing -> Add specific violation
+      if (!decl || decl.status === 'not_detected') {
+        violations.push({
+          field: 'bestBefore',
+          label: 'Missing Best Before / Expiry Date',
+          severity: rule.severity,
+          status: 'not_detected',
+          message: `Best Before / Expiry Date was not detected on this ${commodityInfo.categoryName} product. Under Legal Metrology Rule 6(1)(d) proviso, expiry or best before is mandatory for perishable and consumable commodities.`,
+          confidence: 90,
+        });
+        continue;
+      }
+    } else {
+      mandatoryTotal += rule.weight;
+    }
 
     if (!decl || decl.status === 'not_detected') {
       // Violation: mandatory field missing
@@ -319,6 +473,8 @@ export function evaluateCompliance(declarations, ocrConfidence = 70) {
         message: `${decl.label} was detected but could not be confidently verified. Officer review recommended.`,
         confidence: decl.confidence,
       });
+    } else if (decl.status === 'not_applicable') {
+      mandatoryEarned += rule.weight;
     } else {
       mandatoryEarned += rule.weight;
       // Check for format issues on detected fields
@@ -330,15 +486,9 @@ export function evaluateCompliance(declarations, ocrConfidence = 70) {
     }
   }
 
-  /* ── 2. Date & Expiry Engine Evaluation ── */
-  const mfgDecl = declMap['manufacturingDate'];
-  const expDecl = declMap['bestBefore'];
-  const dateAssessment = evaluateDateCompliance(mfgDecl, expDecl);
-
-  // Add date-specific violations & apply score penalties
+  // Add date-specific violations (e.g. expired, future dated, format issue)
   if (dateAssessment.violations.length > 0) {
     for (const dateVio of dateAssessment.violations) {
-      // Avoid duplicate field messages if already covered by format issue
       violations.push(dateVio);
       if (dateVio.severity === 'high') {
         mandatoryEarned = Math.max(0, mandatoryEarned - 25);
@@ -350,12 +500,12 @@ export function evaluateCompliance(declarations, ocrConfidence = 70) {
 
   const mandatoryScore = Math.max(0, Math.round((mandatoryEarned / mandatoryTotal) * 100));
 
-  /* ── 3. Readability Score ── */
+  /* ── 4. Readability Score ── */
   const readabilityScore = Math.min(100, Math.round(ocrConfidence * 1.15));
 
-  /* ── 4. Formatting Score ── */
+  /* ── 5. Formatting Score ── */
   let formattingDeductions = 0;
-  const detectedCount = declarations.filter((d) => d.status === 'detected').length;
+  const detectedCount = declarations.filter((d) => d.status === 'detected' || d.status === 'not_applicable').length;
   const needsReviewCount = declarations.filter((d) => d.status === 'needs_review').length;
 
   if (needsReviewCount > 0) {
@@ -366,12 +516,12 @@ export function evaluateCompliance(declarations, ocrConfidence = 70) {
   }
   const formattingScore = Math.max(0, Math.min(100, 100 - formattingDeductions));
 
-  /* ── 5. Overall Score ── */
+  /* ── 6. Overall Score ── */
   const overallScore = Math.round(
     mandatoryScore * 0.60 + readabilityScore * 0.20 + formattingScore * 0.20
   );
 
-  /* ── 6. Status Determination ── */
+  /* ── 7. Status Determination ── */
   let status;
   const highViolations = violations.filter((v) => v.severity === 'high');
 
@@ -386,6 +536,7 @@ export function evaluateCompliance(declarations, ocrConfidence = 70) {
   return {
     overallScore: Math.max(0, Math.min(100, overallScore)),
     status,
+    commodityInfo,
     categories: {
       mandatory: { score: mandatoryScore, label: 'Mandatory Declarations' },
       readability: { score: readabilityScore, label: 'Readability' },

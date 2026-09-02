@@ -118,7 +118,7 @@ export default function ScanPage() {
       const declarations = extractDeclarations(ocrResult.text, ocrResult.confidence);
       
       setAnalysisProgress({ step: 4, label: 'Risk assessment…', progress: 90 });
-      const compliance = evaluateCompliance(declarations, ocrResult.confidence);
+      const compliance = evaluateCompliance(declarations, ocrResult.confidence, ocrResult.text);
       
       await new Promise((r) => setTimeout(r, 800));
 

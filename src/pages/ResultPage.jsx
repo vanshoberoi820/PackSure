@@ -129,7 +129,7 @@ export default function ResultPage() {
             declarations.find(d => d.field === 'bestBefore')
           );
 
-          if (!dateAssessment || (!dateAssessment.mfgDate && !dateAssessment.expiryDate)) return null;
+          if (!dateAssessment || (!dateAssessment.mfgDate && !dateAssessment.expiryDate && !dateAssessment.isNotApplicable)) return null;
 
           return (
             <div className="card p-4 border border-blue-100 bg-gradient-to-br from-white via-white to-blue-50/40 shadow-sm space-y-3">
@@ -140,7 +140,9 @@ export default function ResultPage() {
                   </div>
                   <div>
                     <h3 className="text-sm font-bold text-gray-900 leading-tight">Date & Expiry Engine</h3>
-                    <p className="text-[10px] text-gray-500 font-medium">Legal Metrology Rule 6(1)(d)</p>
+                    <p className="text-[10px] text-gray-500 font-medium">
+                      Rule 6(1)(d) • {dateAssessment.commodityCategory || 'Commodity Assessment'}
+                    </p>
                   </div>
                 </div>
 
@@ -152,6 +154,8 @@ export default function ResultPage() {
                       ? 'bg-amber-50 text-amber-700 border-amber-200'
                       : dateAssessment.isFutureDated
                       ? 'bg-purple-50 text-purple-700 border-purple-200'
+                      : dateAssessment.isNotApplicable
+                      ? 'bg-slate-100 text-slate-700 border-slate-200'
                       : dateAssessment.expiryStatus === 'safe'
                       ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                       : 'bg-gray-50 text-gray-600 border-gray-200'
@@ -163,6 +167,8 @@ export default function ResultPage() {
                     ? '⏳ NEAR EXPIRY'
                     : dateAssessment.isFutureDated
                     ? '🚫 POST-DATED'
+                    : dateAssessment.isNotApplicable
+                    ? 'ℹ️ NOT APPLICABLE'
                     : dateAssessment.expiryStatus === 'safe'
                     ? '✓ ACTIVE & SAFE'
                     : 'DATE UNVERIFIED'}
@@ -179,13 +185,19 @@ export default function ResultPage() {
 
                 <div className="bg-gray-50/70 p-2.5 rounded-xl border border-gray-100/80">
                   <span className="text-[10px] text-gray-400 font-semibold block uppercase tracking-wider">
-                    {dateAssessment.isComputedExpiry ? 'Computed Expiry' : 'Best Before / Exp'}
+                    {dateAssessment.isNotApplicable ? 'Best Before / Exp' : dateAssessment.isComputedExpiry ? 'Computed Expiry' : 'Best Before / Exp'}
                   </span>
                   <span className="text-sm font-bold text-gray-800 mt-0.5 block truncate">
-                    {dateAssessment.expiryDate || 'Not Detected'}
+                    {dateAssessment.isNotApplicable ? 'Not Applicable (Exempt)' : (dateAssessment.expiryDate || 'Not Detected')}
                   </span>
                 </div>
               </div>
+
+              {dateAssessment.isNotApplicable && dateAssessment.applicabilityReason ? (
+                <p className="text-[11px] text-slate-500 italic bg-slate-50 p-2 rounded-lg border border-slate-100">
+                  {dateAssessment.applicabilityReason}
+                </p>
+              ) : null}
 
               {dateAssessment.shelfLife && (
                 <div className="text-[11px] text-gray-500 flex items-center gap-1.5 pt-0.5">

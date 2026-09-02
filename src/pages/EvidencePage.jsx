@@ -80,7 +80,11 @@ export default function EvidencePage() {
               >
                 <div className="flex justify-between items-start mb-2">
                   <span className="font-semibold text-slate-800 text-sm">{dec.label}</span>
-                  {isDetected ? (
+                  {dec.status === 'not_applicable' ? (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 uppercase">
+                      Not Applicable
+                    </span>
+                  ) : isDetected ? (
                     <StatusBadge status="compliant" />
                   ) : (
                     <StatusBadge status="violation" />

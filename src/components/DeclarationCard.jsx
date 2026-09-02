@@ -1,4 +1,4 @@
-import { CheckCircle2, AlertTriangle, XCircle, ChevronRight } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, XCircle, MinusCircle, ChevronRight } from 'lucide-react';
 
 export default function DeclarationCard({ declaration, onClick }) {
   const d = declaration;
@@ -27,6 +27,14 @@ export default function DeclarationCard({ declaration, onClick }) {
       border: 'border-rose-100',
       badge: 'Not Detected',
       badgeColor: 'text-rose-700 bg-rose-100',
+    },
+    not_applicable: {
+      icon: MinusCircle,
+      color: 'text-slate-500',
+      bg: 'bg-slate-50',
+      border: 'border-slate-200',
+      badge: 'Not Applicable',
+      badgeColor: 'text-slate-600 bg-slate-200',
     },
   };
 

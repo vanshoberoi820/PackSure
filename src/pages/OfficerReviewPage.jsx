@@ -50,7 +50,7 @@ export default function OfficerReviewPage() {
     // Pre-populate decisions based on AI status
     const initialDecisions = {};
     data.declarations.forEach(dec => {
-      if (dec.status === 'detected') {
+      if (dec.status === 'detected' || dec.status === 'not_applicable') {
         initialDecisions[dec.field] = 'confirm';
       }
       // For not_detected / needs_review, leave undefined to force explicit officer review
@@ -91,7 +91,7 @@ export default function OfficerReviewPage() {
   if (!inspection) return <div className="p-4 text-center text-red-500">Inspection not found</div>;
 
   const itemsToReview = inspection.declarations?.filter(d => 
-    d.status === 'not_detected' || d.status === 'needs_review' || decisions[d.field] !== 'confirm'
+    (d.status === 'not_detected' || d.status === 'needs_review') && d.status !== 'not_applicable' && decisions[d.field] !== 'confirm'
   ) || [];
 
 
