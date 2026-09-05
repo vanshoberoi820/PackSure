@@ -82,3 +82,21 @@ export function getStats() {
     violations: inspections.filter((i) => i.status === 'violation').length,
   };
 }
+
+const VOICE_PREF_KEY = 'packsure_voice_assistant_enabled';
+
+/**
+ * Get voice assistant preference (default: true).
+ */
+export function getVoiceAssistantEnabled() {
+  const val = localStorage.getItem(VOICE_PREF_KEY);
+  return val === null ? true : val === 'true';
+}
+
+/**
+ * Set voice assistant preference.
+ */
+export function setVoiceAssistantEnabled(enabled) {
+  localStorage.setItem(VOICE_PREF_KEY, String(!!enabled));
+}
+
