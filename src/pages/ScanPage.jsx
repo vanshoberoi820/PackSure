@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Camera,
+  Video,
   Image as ImageIcon,
   Sparkles,
   RefreshCw,
@@ -23,12 +24,20 @@ import {
 import { performOCR, assessImageQuality } from '../engine/ocrEngine';
 import { extractDeclarations } from '../engine/extractionEngine';
 import { evaluateCompliance } from '../engine/complianceEngine';
+import { analyzeVideoFrames } from '../engine/videoAnalysisEngine';
 import {
   saveInspection,
   generateInspectionId,
   getVoiceAssistantEnabled,
 } from '../utils/storage';
 import { imageToBase64, resizeImage } from '../utils/imageUtils';
+import {
+  getCameraStream,
+  stopMediaStream,
+  recordProductVideo,
+  extractFramesFromVideo,
+  isVideoRecordingSupported,
+} from '../utils/videoUtils';
 import { getDemoInspection } from '../demo/demoData';
 import {
   buildKeyDeclarationsData,
@@ -40,13 +49,20 @@ import {
 export default function ScanPage() {
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
+  const liveVideoRef = useRef(null);
 
   // State variables
   const [image, setImage] = useState(null);
   const [isDemo, setIsDemo] = useState(false);
-  const [step, setStep] = useState('select'); // 'select', 'preview', 'analyzing'
+  const [scanType, setScanType] = useState('image'); // 'image' | 'video' | 'demo'
+  const [step, setStep] = useState('select'); // 'select', 'recording_video', 'preview', 'analyzing'
   const [analysisProgress, setAnalysisProgress] = useState({ step: 0, label: '', progress: 0 });
   const [error, setError] = useState(null);
+
+  // Video recording states
+  const [recordingStream, setRecordingStream] = useState(null);
+  const [recordingProgress, setRecordingProgress] = useState({ elapsedMs: 0, remainingSec: 8, progressPct: 0 });
+  const [videoBlob, setVideoBlob] = useState(null);
 
   // Voice Assistant states
   const [keyDeclarations, setKeyDeclarations] = useState([]);
@@ -56,16 +72,20 @@ export default function ScanPage() {
   const [currentInspectionId, setCurrentInspectionId] = useState(null);
   const [voiceStatusText, setVoiceStatusText] = useState('Analyzing package label…');
 
-  // Stop speech when component unmounts
+  // Stop speech & release camera stream when component unmounts
   useEffect(() => {
     return () => {
       stopSpeech();
+      if (recordingStream) {
+        stopMediaStream(recordingStream);
+      }
     };
-  }, []);
+  }, [recordingStream]);
 
-  // Trigger file input
+  // Handle Photo / File Source
   const handleSelectSource = (mode) => {
     setError(null);
+    setScanType('image');
     if (mode === 'camera') {
       fileInputRef.current?.setAttribute('capture', 'environment');
     } else {
@@ -74,7 +94,7 @@ export default function ScanPage() {
     fileInputRef.current?.click();
   };
 
-  // Handle file selection
+  // Handle image file selection
   const handleFileChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -82,9 +102,10 @@ export default function ScanPage() {
     try {
       setStep('preview');
       setIsDemo(false);
+      setScanType('image');
       const base64 = await imageToBase64(file);
-      const resized = await resizeImage(base64, 800, 800);
-      setImage(resized);
+      const highRes = await resizeImage(base64, 1800, 1800, 0.95);
+      setImage(highRes);
     } catch (err) {
       console.error(err);
       setError('Failed to load image. Please try again.');
@@ -92,19 +113,85 @@ export default function ScanPage() {
     }
   };
 
+  // Start 8-Second Video Recording Flow
+  const handleStartRecordingVideo = async () => {
+    setError(null);
+    if (!isVideoRecordingSupported()) {
+      setError('Video recording is not supported in this browser. Please use Photo or Upload.');
+      return;
+    }
+
+    try {
+      setScanType('video');
+      setStep('recording_video');
+      setRecordingProgress({ elapsedMs: 0, remainingSec: 8, progressPct: 0 });
+
+      const stream = await getCameraStream();
+      setRecordingStream(stream);
+
+      if (liveVideoRef.current) {
+        liveVideoRef.current.srcObject = stream;
+        await liveVideoRef.current.play();
+      }
+
+      // Start ~8s recording with progress ticks
+      const { videoBlob: recordedBlob } = await recordProductVideo(stream, {
+        durationMs: 8000,
+        onProgress: (p) => {
+          setRecordingProgress(p);
+        },
+      });
+
+      stopMediaStream(stream);
+      setRecordingStream(null);
+      setVideoBlob(recordedBlob);
+
+      // Transition straight to multi-frame analysis
+      handleAnalyzeVideo(recordedBlob);
+    } catch (err) {
+      console.error('Video recording failed:', err);
+      if (recordingStream) stopMediaStream(recordingStream);
+      setRecordingStream(null);
+      setError(err.message || 'Camera recording was interrupted.');
+      setStep('select');
+    }
+  };
+
+  // Stop video recording early and proceed to analyze
+  const handleStopVideoEarly = () => {
+    if (recordingStream) {
+      stopMediaStream(recordingStream);
+      setRecordingStream(null);
+    }
+  };
+
+  // Cancel video recording
+  const handleCancelVideo = () => {
+    if (recordingStream) {
+      stopMediaStream(recordingStream);
+      setRecordingStream(null);
+    }
+    setStep('select');
+    setError(null);
+  };
+
   // Load demo product
   const handleUseDemo = () => {
     setError(null);
     setIsDemo(true);
+    setScanType('demo');
     setStep('preview');
     const demoInspection = getDemoInspection('TEMP');
     setImage(demoInspection.productImage);
   };
 
-  // Retake image
+  // Retake image/video
   const handleRetake = () => {
     stopSpeech();
+    if (recordingStream) stopMediaStream(recordingStream);
+    setRecordingStream(null);
     setImage(null);
+    setVideoBlob(null);
     setIsDemo(false);
     setStep('select');
     setError(null);
@@ -127,7 +214,99 @@ export default function ScanPage() {
     setVoiceMuted(nextMuted);
   };
 
-  // Run analysis and trigger Voice Assistant
+  // Analyze 8-Second Video
+  const handleAnalyzeVideo = async (blob) => {
+    setStep('analyzing');
+    setError(null);
+    setActiveVoiceIndex(-1);
+    setCompletedIndices([]);
+
+    const inspectionId = generateInspectionId();
+    setCurrentInspectionId(inspectionId);
+    const voiceEnabled = getVoiceAssistantEnabled();
+
+    try {
+      setAnalysisProgress({ step: 1, label: 'Extracting representative frames…', progress: 15 });
+      setVoiceStatusText('Extracting sharp video frames…');
+
+      const frames = await extractFramesFromVideo(blob, 8);
+      if (!frames || frames.length === 0) {
+        throw new Error('No clear frames could be extracted from video.');
+      }
+
+      setVoiceStatusText(`Analyzing ${frames.length} frames for declarations…`);
+
+      const videoResult = await analyzeVideoFrames(frames, (p) => {
+        setAnalysisProgress({
+          step: p.step,
+          label: p.label,
+          progress: p.progress,
+        });
+        setVoiceStatusText(p.label);
+      });
+
+      const newInspection = {
+        id: inspectionId,
+        productImage: videoResult.productImage,
+        productName: videoResult.productName,
+        ocrText: videoResult.ocrText,
+        ocrConfidence: videoResult.ocrConfidence,
+        declarations: videoResult.declarations,
+        compliance: videoResult.compliance,
+        scanMetadata: videoResult.scanMetadata,
+        frameResults: videoResult.frameResults,
+        officerReview: {
+          notes: '',
+          decisions: {},
+          completed: false,
+          completedAt: null,
+        },
+        comparison: null,
+        createdAt: new Date().toISOString(),
+        status: videoResult.compliance.status,
+      };
+
+      saveInspection(newInspection);
+
+      const items = buildKeyDeclarationsData(
+        videoResult.declarations,
+        videoResult.compliance,
+        videoResult.compliance?.dateAssessment
+      );
+      setKeyDeclarations(items);
+      setAnalysisProgress({ step: 4, label: 'Voice Assistant Active', progress: 100 });
+
+      runVoiceAssistantSequence({
+        items,
+        enabled: voiceEnabled && !isMuted,
+        introText: '8-second video captured. Fusing multi-frame packaging declarations.',
+        onItemStart: (idx, item) => {
+          setActiveVoiceIndex(idx);
+          if (idx >= 0) {
+            setVoiceStatusText(`Announcing ${item.title}…`);
+          } else {
+            setVoiceStatusText('AI Voice Assistant Starting…');
+          }
+        },
+        onItemEnd: (idx) => {
+          setCompletedIndices((prev) => (prev.includes(idx) ? prev : [...prev, idx]));
+        },
+        onComplete: () => {
+          setActiveVoiceIndex(99);
+          setVoiceStatusText('Verification Complete. Loading report…');
+          setTimeout(() => {
+            navigate(`/result/${inspectionId}`);
+          }, 600);
+        },
+      });
+    } catch (err) {
+      console.error('Video analysis failed:', err);
+      setError(err.message || 'Video analysis failed. Please try capturing closer to the label.');
+      setStep('select');
+    }
+  };
+
+  // Analyze Single Image / Demo
   const handleAnalyze = async () => {
     setStep('analyzing');
     setError(null);
@@ -136,11 +315,9 @@ export default function ScanPage() {
 
     const inspectionId = generateInspectionId();
     setCurrentInspectionId(inspectionId);
-
     const voiceEnabled = getVoiceAssistantEnabled();
 
     if (isDemo) {
-      // Demo Flow
       setAnalysisProgress({ step: 1, label: 'Reading demo label…', progress: 100 });
       await new Promise((r) => setTimeout(r, 600));
 
@@ -155,10 +332,10 @@ export default function ScanPage() {
       setKeyDeclarations(items);
       setAnalysisProgress({ step: 4, label: 'Voice Assistant Active', progress: 100 });
 
-      // Run voice assistant sequence
       runVoiceAssistantSequence({
         items,
         enabled: voiceEnabled && !isMuted,
+        introText: 'Demo product loaded. Analyzing key declarations.',
         onItemStart: (idx, item) => {
           setActiveVoiceIndex(idx);
           if (idx >= 0) {
@@ -181,11 +358,10 @@ export default function ScanPage() {
       return;
     }
 
-    // Real OCR Flow
     try {
-      setAnalysisProgress({ step: 0, label: 'Quality check…', progress: 0 });
-      setVoiceStatusText('Checking image readability…');
-      await new Promise((r) => setTimeout(r, 500));
+      setAnalysisProgress({ step: 0, label: 'Optimizing label readability…', progress: 10 });
+      setVoiceStatusText('Enhancing resolution & contrast…');
+      await new Promise((r) => setTimeout(r, 400));
 
       const ocrResult = await performOCR(image, (p) => {
         setAnalysisProgress({
@@ -193,10 +369,9 @@ export default function ScanPage() {
           label: p.label,
           progress: p.progress,
         });
-        setVoiceStatusText(`Extracting text (${p.progress}%)…`);
+        setVoiceStatusText(p.label);
       });
 
-      // Assess quality
       const qualityAssess = assessImageQuality(ocrResult);
       if (!qualityAssess.usable) {
         setError(qualityAssess.message);
@@ -204,11 +379,11 @@ export default function ScanPage() {
         return;
       }
 
-      setAnalysisProgress({ step: 3, label: 'Validating declarations…', progress: 50 });
-      setVoiceStatusText('Evaluating Legal Metrology rules…');
-      const declarations = extractDeclarations(ocrResult.text, ocrResult.confidence);
+      setAnalysisProgress({ step: 3, label: 'Extracting legal declarations…', progress: 65 });
+      setVoiceStatusText('Parsing Legal Metrology declarations…');
+      const declarations = extractDeclarations(ocrResult.text, ocrResult.confidence, { source: 'single_image' });
 
-      setAnalysisProgress({ step: 4, label: 'Risk assessment…', progress: 90 });
+      setAnalysisProgress({ step: 4, label: 'Legal Metrology compliance check…', progress: 90 });
       const compliance = evaluateCompliance(declarations, ocrResult.confidence, ocrResult.text);
 
       const newInspection = {
@@ -219,6 +394,11 @@ export default function ScanPage() {
         ocrConfidence: ocrResult.confidence,
         declarations,
         compliance,
+        scanMetadata: {
+          type: 'image',
+          durationSeconds: null,
+          framesAnalyzed: 1,
+        },
         officerReview: {
           notes: '',
           decisions: {},
@@ -236,10 +416,10 @@ export default function ScanPage() {
       setKeyDeclarations(items);
       setAnalysisProgress({ step: 4, label: 'Voice Assistant Active', progress: 100 });
 
-      // Run voice assistant sequence
       runVoiceAssistantSequence({
         items,
         enabled: voiceEnabled && !isMuted,
+        introText: 'High resolution label captured. Verifying mandatory declarations.',
         onItemStart: (idx, item) => {
           setActiveVoiceIndex(idx);
           if (idx >= 0) {
@@ -261,24 +441,8 @@ export default function ScanPage() {
       });
     } catch (err) {
       console.error(err);
-      setError(err.message || 'Analysis service failed. Try using Demo Mode or a clearer image.');
+      setError(err.message || 'Analysis service failed. Please capture a clearer image.');
       setStep('preview');
-    }
-  };
-
-  // Helper icons for the 4 key declarations
-  const getIconForField = (id) => {
-    switch (id) {
-      case 'mrp':
-        return Tag;
-      case 'useBy':
-        return CalendarClock;
-      case 'netWeight':
-        return Scale;
-      case 'manufactureOrigin':
-        return Building2;
-      default:
-        return Radio;
     }
   };
 
@@ -299,6 +463,7 @@ export default function ScanPage() {
           <button
             onClick={() => {
               stopSpeech();
+              if (recordingStream) stopMediaStream(recordingStream);
               navigate('/');
             }}
             className="p-1 hover:bg-gray-100 rounded-lg text-gray-500"
@@ -306,7 +471,11 @@ export default function ScanPage() {
             <ArrowLeft className="w-6 h-6" />
           </button>
           <h1 className="text-xl font-bold text-gray-900">
-            {step === 'analyzing' ? 'Live Verification' : 'Scan Product'}
+            {step === 'analyzing'
+              ? 'Live Verification'
+              : step === 'recording_video'
+              ? '8-Sec Video Scan'
+              : 'Scan Product'}
           </h1>
         </div>
 
@@ -326,58 +495,157 @@ export default function ScanPage() {
         )}
       </div>
 
-      {/* STEP 1: Select image source */}
+      {/* STEP 1: Select Scan Source */}
       {step === 'select' && (
-        <div className="flex-1 flex flex-col justify-center px-6">
-          <div className="text-center mb-8">
-            <div className="w-16 h-16 bg-primary-50 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-primary-100">
+        <div className="flex-1 flex flex-col justify-center px-6 py-6">
+          <div className="text-center mb-6">
+            <div className="w-16 h-16 bg-primary-50 rounded-2xl flex items-center justify-center mx-auto mb-3 border border-primary-100 shadow-sm">
               <Camera className="w-8 h-8 text-primary-600" />
             </div>
-            <h2 className="text-lg font-bold text-gray-900">Add Product Image</h2>
-            <p className="text-sm text-gray-500 mt-1 max-w-xs mx-auto">
-              Capture or upload the package label showing MRP, Net Qty, Use By date, and Manufacturer details.
+            <h2 className="text-xl font-bold text-gray-900">Smart Product Inspection</h2>
+            <p className="text-xs text-gray-500 mt-1 max-w-xs mx-auto">
+              Scan pre-packaged commodities to verify MRP, Net Quantity, Mfg/Expiry dates, and Legal Metrology Rule 6 declarations.
             </p>
           </div>
 
-          <div className="space-y-4">
+          <div className="space-y-3.5">
+            {/* 8-Sec Video Scan (Featured) */}
+            <button
+              onClick={handleStartRecordingVideo}
+              className="w-full p-4 bg-gradient-to-r from-primary-600 via-primary-700 to-indigo-700 text-white rounded-2xl shadow-lg hover:shadow-xl active:scale-[0.98] transition-all flex items-center justify-between text-left relative overflow-hidden group"
+            >
+              <div className="flex items-center gap-3.5 relative z-10">
+                <div className="w-12 h-12 rounded-xl bg-white/20 backdrop-blur-md flex items-center justify-center border border-white/20">
+                  <Video className="w-6 h-6 text-white animate-pulse" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm font-bold text-white">Record 8-Sec 360° Video</span>
+                    <span className="bg-amber-400 text-amber-950 font-extrabold text-[9px] px-2 py-0.5 rounded-full uppercase tracking-wider">
+                      Recommended
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-primary-100 mt-0.5">
+                    Multi-frame OCR captures all sides & crimps automatically
+                  </p>
+                </div>
+              </div>
+              <ArrowRight className="w-5 h-5 text-white/80 group-hover:translate-x-1 transition-transform relative z-10" />
+            </button>
+
+            {/* Photo Capture */}
             <button
               onClick={() => handleSelectSource('camera')}
-              className="btn-primary flex items-center justify-center gap-3 py-4"
+              className="btn-outline flex items-center justify-center gap-3 py-3.5 w-full bg-white shadow-xs font-semibold"
             >
-              <Camera className="w-5 h-5" />
-              Take Photo
+              <Camera className="w-5 h-5 text-gray-700" />
+              Take Single Photo
             </button>
 
+            {/* Image Upload */}
             <button
               onClick={() => handleSelectSource('upload')}
-              className="btn-outline flex items-center justify-center gap-3 py-4"
+              className="btn-outline flex items-center justify-center gap-3 py-3.5 w-full bg-white shadow-xs font-semibold"
             >
-              <ImageIcon className="w-5 h-5" />
-              Upload Image
+              <ImageIcon className="w-5 h-5 text-gray-700" />
+              Upload Image from Gallery
             </button>
 
-            <div className="relative my-6 flex items-center justify-center">
+            <div className="relative my-4 flex items-center justify-center">
               <hr className="w-full border-gray-200" />
-              <span className="absolute bg-gray-50 px-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+              <span className="absolute bg-gray-50 px-3 text-[11px] font-bold text-gray-400 uppercase tracking-wider">
                 OR
               </span>
             </div>
 
+            {/* Demo Product */}
             <button
               onClick={handleUseDemo}
-              className="w-full py-4 bg-amber-50 text-amber-800 border-2 border-dashed border-amber-300 rounded-xl hover:bg-amber-100 active:scale-[0.98] transition-all flex items-center justify-center gap-3 font-semibold"
+              className="w-full py-3.5 bg-amber-50 text-amber-900 border-2 border-dashed border-amber-300 rounded-xl hover:bg-amber-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2.5 font-bold text-sm shadow-xs"
             >
               <Sparkles className="w-5 h-5 text-amber-600" />
-              Use Demo Product
+              Use Demo Product (SIH Hackathon)
             </button>
           </div>
 
           {error && (
-            <div className="mt-6 p-4 bg-rose-50 border border-rose-100 rounded-xl flex gap-3 text-rose-700 text-sm">
-              <ShieldAlert className="w-5 h-5 flex-shrink-0" />
+            <div className="mt-5 p-4 bg-rose-50 border border-rose-200 rounded-xl flex gap-3 text-rose-700 text-xs">
+              <ShieldAlert className="w-5 h-5 flex-shrink-0 mt-0.5" />
               <p>{error}</p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* STEP 1.5: 8-Second Video Live Recording Viewfinder */}
+      {step === 'recording_video' && (
+        <div className="flex-1 flex flex-col justify-between p-4 bg-black text-white relative overflow-hidden">
+          {/* Top Timer Bar */}
+          <div className="relative z-10 bg-black/60 backdrop-blur-md rounded-2xl p-3 border border-white/20 flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-3 h-3 rounded-full bg-rose-500 animate-ping" />
+              <span className="text-xs font-bold uppercase tracking-wider text-rose-400">
+                Recording 360° Label
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 font-mono font-bold text-sm bg-white/10 px-3 py-1 rounded-lg">
+              <span>00:0{recordingProgress.remainingSec}</span>
+              <span className="text-gray-400 text-xs">/ 00:08</span>
+            </div>
+          </div>
+
+          {/* Progress Bar */}
+          <div className="w-full bg-white/20 h-1.5 rounded-full overflow-hidden my-2 relative z-10">
+            <div
+              className="bg-gradient-to-r from-emerald-400 to-primary-400 h-full transition-all duration-150"
+              style={{ width: `${recordingProgress.progressPct}%` }}
+            />
+          </div>
+
+          {/* Live Camera Viewport */}
+          <div className="flex-1 relative rounded-2xl overflow-hidden bg-slate-900 flex items-center justify-center border border-white/10 shadow-inner">
+            <video
+              ref={liveVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-cover"
+            />
+
+            {/* Overlay Guide Box */}
+            <div className="absolute inset-8 border-2 border-dashed border-white/60 rounded-2xl pointer-events-none flex flex-col justify-between p-3">
+              <span className="text-[10px] bg-black/60 text-white px-2 py-0.5 rounded self-start">
+                Align Package Inside Frame
+              </span>
+              <span className="text-[10px] bg-black/60 text-emerald-300 px-2 py-0.5 rounded self-end">
+                Move Slowly Around Product
+              </span>
+            </div>
+          </div>
+
+          {/* Bottom Guidance & Actions */}
+          <div className="relative z-10 space-y-3 pt-3">
+            <p className="text-xs text-center text-gray-300">
+              💡 Rotate the package slowly to capture MRP, Dates, Weight & Manufacturer.
+            </p>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={handleCancelVideo}
+                className="py-3 bg-white/15 hover:bg-white/25 text-white font-semibold rounded-xl text-xs border border-white/20 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleStopVideoEarly}
+                className="py-3 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-lg transition-all"
+              >
+                <Square className="w-4 h-4 fill-white" />
+                Done (Analyze Now)
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -385,7 +653,7 @@ export default function ScanPage() {
       {step === 'preview' && image && (
         <div className="flex-1 flex flex-col p-6">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-base font-bold text-gray-900">Label Preview</h2>
+            <h2 className="text-base font-bold text-gray-900">High-Resolution Preview</h2>
             <span className="text-xs text-primary-600 font-medium flex items-center gap-1">
               <Bot className="w-3.5 h-3.5" /> Voice Assistant Ready
             </span>
@@ -420,12 +688,10 @@ export default function ScanPage() {
         </div>
       )}
 
-      {/* STEP 3: Voice Assistant & Real-time 4-Item Processing HUD */}
+      {/* STEP 3: Voice Assistant & Multi-Metric Processing HUD */}
       {step === 'analyzing' && (
         <div className="flex-1 flex flex-col justify-between p-5 space-y-4">
-          {/* Top Voice Assistant Banner */}
           <div className="bg-gradient-to-r from-primary-700 via-primary-600 to-indigo-700 rounded-2xl p-4 text-white shadow-lg relative overflow-hidden">
-            {/* Background glowing shapes */}
             <div className="absolute -right-6 -bottom-6 w-28 h-28 bg-white/10 rounded-full blur-xl pointer-events-none" />
             <div className="absolute left-1/3 -top-10 w-20 h-20 bg-indigo-400/20 rounded-full blur-lg pointer-events-none" />
 
@@ -439,12 +705,11 @@ export default function ScanPage() {
                     AI Voice Compliance Assistant
                   </h2>
                   <p className="text-[11px] text-primary-200 font-medium leading-none">
-                    Auditing 4 Critical Legal Metrology Metrics
+                    {scanType === 'video' ? 'Multi-Frame Legal Metrology Consensus' : 'Auditing Legal Metrology Declarations'}
                   </p>
                 </div>
               </div>
 
-              {/* Animated Equalizer Bars */}
               {!isMuted && activeVoiceIndex >= 0 && activeVoiceIndex < 4 && (
                 <div className="flex items-end gap-1 h-5 px-2 py-1 bg-white/15 rounded-lg border border-white/20">
                   <span className="w-1 bg-emerald-400 rounded-full animate-[bounce_0.8s_infinite_100ms] h-3" />
@@ -455,7 +720,6 @@ export default function ScanPage() {
               )}
             </div>
 
-            {/* Live status caption */}
             <div className="mt-3 bg-black/20 rounded-xl px-3 py-2 border border-white/10 flex items-center justify-between">
               <span className="text-xs text-white/90 font-medium truncate flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
@@ -471,7 +735,6 @@ export default function ScanPage() {
             </div>
           </div>
 
-          {/* 4 Core Declarations Interactive Grid */}
           <div className="space-y-2.5 flex-1 flex flex-col justify-center">
             {keyDeclarations.length > 0 ? (
               keyDeclarations.map((item, idx) => {
@@ -490,7 +753,6 @@ export default function ScanPage() {
                         : 'bg-white/60 border-gray-200 opacity-60'
                     }`}
                   >
-                    {/* Active highlight glow bar */}
                     {isActive && (
                       <div className="absolute top-0 left-0 bottom-0 w-1.5 bg-primary-600" />
                     )}
@@ -525,7 +787,6 @@ export default function ScanPage() {
                         </div>
                       </div>
 
-                      {/* Status indicator */}
                       <div className="shrink-0 flex items-center gap-1.5">
                         {isDone ? (
                           <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold px-2 py-0.5 rounded-full">
@@ -547,16 +808,16 @@ export default function ScanPage() {
                 );
               })
             ) : (
-              // Initial Loading skeleton before OCR finishes
               <div className="space-y-3 py-6 text-center">
                 <div className="w-12 h-12 border-3 border-primary-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-                <p className="text-sm font-semibold text-gray-700">Detecting text & extracting declarations…</p>
-                <p className="text-xs text-gray-400">Tesseract.js OCR engine running in browser worker</p>
+                <p className="text-sm font-semibold text-gray-700">{analysisProgress.label || 'Detecting declarations…'}</p>
+                <p className="text-xs text-gray-400">
+                  {scanType === 'video' ? '8-second multi-frame consensus engine' : 'Tesseract OCR engine running in browser'}
+                </p>
               </div>
             )}
           </div>
 
-          {/* Bottom Action Controls — includes explicit "Stop in between" button */}
           <div className="pt-2 space-y-2.5">
             <button
               onClick={handleStopAndProceed}
