@@ -1,6 +1,6 @@
 /* ─────────────────────────────────────────────
-   Declaration Extraction Engine — Resilient Multiline Legal Metrology Parser
-   Window-based tolerant extraction with context-aware OCR normalization
+   Declaration Extraction Engine — Legal Metrology (Packaged Commodities) Rules, 2011
+   Extracts mandatory Rule 6 declarations with weight, measure & number support
    ───────────────────────────────────────────── */
 import {
   normalizeOCRText,
@@ -8,11 +8,34 @@ import {
   normalizeDateDigits,
   normalizeMetricQuantity,
   normalizeFSSAILicense,
-} from '../utils/ocrNormalization';
+} from '../utils/ocrNormalization.js';
+import { getCountryFromGS1Barcode } from './barcodeEngine.js';
 
 export function extractDeclarations(rawOcrText, ocrConfidence = 75, metadata = {}) {
+  const detectedBarcodes = metadata.detectedBarcodes || [];
+
   if (!rawOcrText || rawOcrText.trim().length === 0) {
-    return getAllDeclarationsAsNotDetected(metadata);
+    // If no OCR text but we have a barcode, still extract barcode and country of origin
+    const list = getAllDeclarationsAsNotDetected(metadata);
+    if (detectedBarcodes.length > 0) {
+      const ean = detectedBarcodes.find(b => b.country);
+      if (ean) {
+        const countryIdx = list.findIndex(d => d.field === 'countryOfOrigin');
+        if (countryIdx >= 0) {
+          list[countryIdx] = makeDeclaration(
+            'countryOfOrigin',
+            'Country of Origin',
+            ean.country,
+            95,
+            'detected',
+            'Rule 6(1)(g)',
+            `Derived from GS1 Barcode ${ean.rawValue} (${ean.country})`,
+            metadata
+          );
+        }
+      }
+    }
+    return list;
   }
 
   const text = normalizeOCRText(rawOcrText);
@@ -56,7 +79,7 @@ function notDetected(field, label, rule, metadata = {}) {
 
 function getAllDeclarationsAsNotDetected(metadata = {}) {
   return [
-    notDetected('productName', 'Product Name', 'Rule 6(1)(b)', metadata),
+    notDetected('productName', 'Product Name / Commodity', 'Rule 6(1)(b)', metadata),
     notDetected('manufacturer', 'Manufacturer', 'Rule 6(1)(a)', metadata),
     notDetected('packer', 'Packer', 'Rule 6(1)(a)', metadata),
     notDetected('importer', 'Importer', 'Rule 6(1)(a)', metadata),
@@ -72,13 +95,17 @@ function getAllDeclarationsAsNotDetected(metadata = {}) {
   ];
 }
 
+/**
+ * Rule 6(1)(b) — Common / Generic Name of Commodity
+ */
 export function extractProductNameAndBrand(text, confMul, metadata = {}) {
   const field = 'productName';
-  const label = 'Product Name';
+  const label = 'Product Name / Commodity';
   const rule = 'Rule 6(1)(b)';
 
+  // 1. Explicit declaration "Product Name: ...", "Commodity: ..."
   const explicit = text.match(
-    /(?:product\s*(?:name)?|name\s*of\s*(?:the\s*)?(?:product|commodity|item))\s*[:\-]?\s*(.{3,80})/i
+    /(?:product\s*(?:name)?|commodity(?:\s*name)?|name\s*of\s*(?:the\s*)?(?:product|commodity|item))\s*[:\-]?\s*(.{3,80})/i
   );
   if (explicit) {
     const val = explicit[1].split(/\n/)[0].trim().replace(/[:;\-_]+$/, '');
@@ -87,6 +114,41 @@ export function extractProductNameAndBrand(text, confMul, metadata = {}) {
     }
   }
 
+  // 2. Trademark / Brand declaration e.g. "SHAPE IS A REGISTERED TRADEMARK OF RISHABH INDUSTRIES"
+  const tmMatch = text.match(/([A-Za-z0-9\s]{2,30})\s+is\s+a\s+registered\s+trademark/i);
+  if (tmMatch) {
+    const brand = tmMatch[1].trim();
+    // Check if commodity type can be identified
+    const commodityMatch = text.match(/\b(notebook|stationery|book|diary|register|pen|pencil|paper)\b/i);
+    const combinedName = commodityMatch
+      ? `${brand} ${commodityMatch[1].charAt(0).toUpperCase() + commodityMatch[1].slice(1)}`
+      : `${brand} Product`;
+    return makeDeclaration(field, label, combinedName, 92 * confMul, 'detected', rule, tmMatch[0], metadata);
+  }
+
+  // 3. Known Commodity generic terms (Stationery, Food, Household)
+  const genericKeywords = [
+    'Notebook', 'Exercise Book', 'Long Book', 'Drawing Book', 'Diary', 'Register', 'Stationery',
+    'Chocolate Cookies', 'Biscuits', 'Cookies', 'Bread', 'Cake', 'Atta', 'Flour', 'Rice',
+    'Edible Oil', 'Mustard Oil', 'Sunflower Oil', 'Tea', 'Coffee', 'Milk', 'Butter', 'Ghee',
+    'Bathing Soap', 'Soap', 'Shampoo', 'Toothpaste', 'Face Wash', 'Detergent',
+    'LED Bulb', 'USB Cable', 'Earphones', 'Headphones', 'Battery', 'Apparel', 'T-Shirt', 'Shirt'
+  ];
+
+  for (const kw of genericKeywords) {
+    const regex = new RegExp(`\\b${kw}\\b`, 'i');
+    if (regex.test(text)) {
+      // Find Brand line if any
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      const topBrand = lines.find(l => l.length >= 2 && l.length <= 25 && !/mrp|net|mfg|lic|rs|₹|date|www/i.test(l));
+      const finalName = topBrand && !topBrand.toLowerCase().includes(kw.toLowerCase())
+        ? `${topBrand} ${kw}`
+        : kw;
+      return makeDeclaration(field, label, finalName, 90 * confMul, 'detected', rule, kw, metadata);
+    }
+  }
+
+  // 4. Fallback line candidate scoring
   const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length > 2);
   const skipPattern = /^(mrp|net|mfg|mfd|best|exp|batch|fssai|lic|made|product of|country|import|pack|manufact|ingredient|nutrition|energy|protein|fat|carb|sugar|storage|allergen|serving|scan|visit|customer|care|tel|call|toll|www|\d+$)/i;
 
@@ -99,7 +161,7 @@ export function extractProductNameAndBrand(text, confMul, metadata = {}) {
 
     let score = 50;
     const words = line.split(/\s+/);
-    if (words.length >= 2 && words.length <= 6) score += 20;
+    if (words.length >= 1 && words.length <= 6) score += 20;
     if (/^[A-Z]/.test(line)) score += 15;
     if (line === line.toUpperCase()) score += 10;
     if (i < 3) score += 15;
@@ -111,21 +173,25 @@ export function extractProductNameAndBrand(text, confMul, metadata = {}) {
 
   if (scoredCandidates.length > 0) {
     const best = scoredCandidates[0];
-    const status = best.score >= 70 ? 'detected' : 'needs_review';
+    const status = best.score >= 65 ? 'detected' : 'needs_review';
     return makeDeclaration(field, label, best.line, Math.min(90, best.score * confMul), status, rule, best.line, metadata);
   }
 
   return notDetected(field, label, rule, metadata);
 }
 
+/**
+ * Rule 6(1)(a) — Manufacturer Identity & Address
+ */
 export function extractManufacturer(text, confMul, metadata = {}) {
   const field = 'manufacturer';
   const label = 'Manufacturer';
   const rule = 'Rule 6(1)(a)';
 
   const patterns = [
-    /(?:manufactur(?:ed|er|ing)\s*(?:by|&\s*(?:market|pack|pkd))?|mfg\.?\s*(?:by)?|mfd\.?\s*(?:by)?)\s*[:\-]?\s*([\s\S]{5,180}?)(?=\n\s*(?:pkg|pack|market|mfg|exp|batch|fssai|net|mrp|country|storage|ingredient|$))/i,
-    /(?:marketed\s*(?:by|&))\s*[:\-]?\s*([\s\S]{5,180}?)(?=\n\s*(?:pkg|pack|mfg|exp|batch|fssai|net|mrp|$))/i,
+    /(?:marketed\s*&\s*manufactured\s*(?:by)?|manufactured\s*&\s*marketed\s*(?:by)?|mkt\s*&\s*mfg\s*(?:by)?)\s*[:\-]?\s*([\s\S]{5,220}?)(?=\n\s*(?:size|total\s*pages|pages|pkg|pack|mfg|exp|batch|fssai|net|mrp|country|storage|ingredient|plant|go green|scan|$))/i,
+    /(?:manufactur(?:ed|er|ing)\s*(?:by|&\s*(?:market|pack|pkd))?|mfg\.?\s*(?:by)?|mfd\.?\s*(?:by)?)\s*[:\-]?\s*([\s\S]{5,200}?)(?=\n\s*(?:size|total\s*pages|pkg|pack|market|mfg|exp|batch|fssai|net|mrp|country|storage|ingredient|go green|$))/i,
+    /(?:marketed\s*(?:by|&))\s*[:\-]?\s*([\s\S]{5,180}?)(?=\n\s*(?:size|pkg|pack|mfg|exp|batch|fssai|net|mrp|$))/i,
   ];
 
   for (const pat of patterns) {
@@ -134,14 +200,24 @@ export function extractManufacturer(text, confMul, metadata = {}) {
       let val = m[1].replace(/\n+/g, ', ').replace(/\s{2,}/g, ' ').trim();
       val = val.replace(/[,;\-_.]+$/, '').trim();
       if (val.length >= 4) {
-        return makeDeclaration(field, label, val, 90 * confMul, 'detected', rule, m[0].slice(0, 100), metadata);
+        return makeDeclaration(field, label, val, 95 * confMul, 'detected', rule, m[0].slice(0, 120), metadata);
       }
     }
+  }
+
+  // Fallback: Registered Trademark of <Company>
+  const tm = text.match(/(?:registered\s*trademark\s*of|trademark\s*of)\s+([A-Za-z0-9\s.,\-_]{4,100})/i);
+  if (tm) {
+    const val = tm[1].replace(/\n+/g, ', ').trim().replace(/[,;\-_.]+$/, '');
+    return makeDeclaration(field, label, val, 85 * confMul, 'detected', rule, tm[0], metadata);
   }
 
   return notDetected(field, label, rule, metadata);
 }
 
+/**
+ * Rule 6(1)(a) — Packer Identity
+ */
 export function extractPacker(text, confMul, metadata = {}) {
   const field = 'packer';
   const label = 'Packer';
@@ -154,13 +230,16 @@ export function extractPacker(text, confMul, metadata = {}) {
     let val = m[1].replace(/\n+/g, ', ').replace(/\s{2,}/g, ' ').trim();
     val = val.replace(/[,;\-_.]+$/, '').trim();
     if (val.length >= 4) {
-      return makeDeclaration(field, label, val, 88 * confMul, 'detected', rule, m[0].slice(0, 100), metadata);
+      return makeDeclaration(field, label, val, 90 * confMul, 'detected', rule, m[0].slice(0, 100), metadata);
     }
   }
 
   return notDetected(field, label, rule, metadata);
 }
 
+/**
+ * Rule 6(1)(a) — Importer Identity
+ */
 export function extractImporter(text, confMul, metadata = {}) {
   const field = 'importer';
   const label = 'Importer';
@@ -173,18 +252,48 @@ export function extractImporter(text, confMul, metadata = {}) {
     let val = m[1].replace(/\n+/g, ', ').replace(/\s{2,}/g, ' ').trim();
     val = val.replace(/[,;\-_.]+$/, '').trim();
     if (val.length >= 4) {
-      return makeDeclaration(field, label, val, 88 * confMul, 'detected', rule, m[0].slice(0, 100), metadata);
+      return makeDeclaration(field, label, val, 90 * confMul, 'detected', rule, m[0].slice(0, 100), metadata);
     }
   }
 
   return notDetected(field, label, rule, metadata);
 }
 
+/**
+ * Rule 6(1)(c) — Net Quantity
+ * Supports weight (g, kg), measure/volume (ml, L), and number/count (Pages, Sheets, N, Units, Pcs, Dimensions)
+ */
 export function extractNetQuantity(text, confMul, metadata = {}) {
   const field = 'netQuantity';
   const label = 'Net Quantity';
   const rule = 'Rule 6(1)(c)';
 
+  // 1. Stationery / Paper / Books: "Total Pages : 288 (with cover)", "288 Pages", "Size (cm): 24 x 18"
+  const pagesMatch = text.match(
+    /(?:total\s*pages?|pages?|sheets?|leaves?)\s*[:\-]?\s*([0-9OIlSBzZ]+)(?:\s*\((?:with\s*cover|without\s*cover|inclusive)\))?/i
+  );
+  const sizeMatch = text.match(/(?:size\s*(?:\(cm\)|\(mm\)|\(in\))?)\s*[:\-]?\s*([0-9.,]+\s*(?:x|\*)\s*[0-9.,]+(?:\s*cm|\s*mm|\s*m)?)/i);
+
+  if (pagesMatch) {
+    const rawNum = pagesMatch[1].replace(/[O]/g, '0').replace(/[Il]/g, '1').replace(/[S]/g, '5').replace(/[B]/g, '8');
+    const sizePart = sizeMatch ? ` (${sizeMatch[1].trim()})` : '';
+    const hasCover = /with\s*cover/i.test(text.slice(Math.max(0, pagesMatch.index - 10), pagesMatch.index + 50));
+    const coverSuffix = hasCover ? ' (with cover)' : '';
+    const formatted = `${rawNum} Pages${coverSuffix}${sizePart}`;
+    return makeDeclaration(field, label, formatted, 95 * confMul, 'detected', rule, pagesMatch[0], metadata);
+  }
+
+  // 2. Count / Number format: "1 N", "10 Units", "1 Pc", "100 Numbers"
+  const countMatch = text.match(
+    /(?:net\s*(?:qty|quantity|count|number)?|quantity|qty|contents?)\s*[:\-]?\s*([0-9OIlSBzZ]+\s*(?:n|u|units?|pcs?|pieces?|nos?|numbers?|count))\b/i
+  );
+  if (countMatch) {
+    const norm = normalizeMetricQuantity(countMatch[1]);
+    const sizePart = sizeMatch ? ` (${sizeMatch[1].trim()})` : '';
+    return makeDeclaration(field, label, `${norm}${sizePart}`, 92 * confMul, 'detected', rule, countMatch[0], metadata);
+  }
+
+  // 3. Weight / Volume: "Net Wt. 500 g", "Net Quantity: 1 L", "750 ml"
   const patterns = [
     /(?:net\s*(?:wt|weight|qty|quantity|content|vol|volume|mass)|contents?|netto)[\s\S]{0,30}?[:\-]?\s*([0-9OIlSBzZ.,]+\s*(?:g|gm|gms|gram|grams|kg|kgs|kilogram|ml|mL|l|ltr|litre|liter|cm|mm|m|pieces?|pcs?|units?|nos?|n)\b)/i,
     /([\d.,]+\s*(?:g|gm|kg|ml|l|ltr)\b)\s*(?:net|e\b)/i,
@@ -195,13 +304,22 @@ export function extractNetQuantity(text, confMul, metadata = {}) {
     if (m) {
       let rawQty = m[1].trim();
       let normalized = normalizeMetricQuantity(rawQty);
-      return makeDeclaration(field, label, normalized, 94 * confMul, 'detected', rule, m[0], metadata);
+      return makeDeclaration(field, label, normalized, 95 * confMul, 'detected', rule, m[0], metadata);
     }
+  }
+
+  // 4. Standalone Dimensions / Size as quantity indicator
+  if (sizeMatch) {
+    const sizeVal = `1 N (${sizeMatch[1].trim()})`;
+    return makeDeclaration(field, label, sizeVal, 88 * confMul, 'detected', rule, sizeMatch[0], metadata);
   }
 
   return notDetected(field, label, rule, metadata);
 }
 
+/**
+ * Rule 6(1)(e) — Retail Sale Price / Maximum Retail Price (MRP)
+ */
 export function extractMRP(text, confMul, metadata = {}) {
   const field = 'mrp';
   const label = 'MRP (Maximum Retail Price)';
@@ -210,9 +328,10 @@ export function extractMRP(text, confMul, metadata = {}) {
   const normalizedPriceText = normalizePriceString(text);
 
   const patterns = [
-    /MRP[\s\S]{0,50}?(?:Rs\.?|₹|INR)?\s*[:\-]?\s*([0-9.,]+)(?:\s*\/?-|\s*only|\s*incl|\n|$)/i,
-    /(?:maximum\s*retail\s*price)[\s\S]{0,50}?(?:Rs\.?|₹|INR)?\s*[:\-]?\s*([0-9.,]+)/i,
-    /(?:Rs\.?|₹)\s*([0-9.,]+)\s*(?:\/\-|only|\(incl)/i,
+    /MRP[^\d\n]{0,30}(?:Rs\.?|₹|INR)?\s*[:\-.]?\s*([0-9]+(?:\.[0-9]{1,2})?)/i,
+    /(?:maximum\s*retail\s*price|max\.?\s*retail\s*price)[^\d\n]{0,30}(?:Rs\.?|₹|INR)?\s*[:\-.]?\s*([0-9]+(?:\.[0-9]{1,2})?)/i,
+    /(?:Rs\.?|₹)\s*([0-9]+(?:\.[0-9]{1,2})?)\s*(?:\/\-|only|\(incl|incl|\n|$)/i,
+    /M\.?\s*R\.?\s*P\.?\s*[:\-.]?\s*(?:Rs\.?|₹)?\s*([0-9]+(?:\.[0-9]{1,2})?)/i,
   ];
 
   for (const pat of patterns) {
@@ -222,7 +341,7 @@ export function extractMRP(text, confMul, metadata = {}) {
       const price = parseFloat(cleanNum);
 
       if (!isNaN(price) && price > 0 && price < 100000 && cleanNum.length <= 8) {
-        const hasTax = /incl|tax/i.test(text.slice(Math.max(0, m.index - 30), m.index + 80));
+        const hasTax = /incl|tax|all\s*taxes/i.test(text.slice(Math.max(0, m.index - 30), m.index + 80));
         const taxSuffix = hasTax ? ' (Incl. of all taxes)' : '';
         const formatted = `Rs. ${price.toFixed(2)}${taxSuffix}`;
         return makeDeclaration(field, label, formatted, 95 * confMul, 'detected', rule, m[0], metadata);
@@ -233,6 +352,9 @@ export function extractMRP(text, confMul, metadata = {}) {
   return notDetected(field, label, rule, metadata);
 }
 
+/**
+ * Rule 6(1)(d) — Month and Year of Manufacture / Packing
+ */
 export function extractManufacturingDate(text, confMul, metadata = {}) {
   const field = 'manufacturingDate';
   const label = 'Manufacturing / Packing Date';
@@ -254,6 +376,9 @@ export function extractManufacturingDate(text, confMul, metadata = {}) {
   return notDetected(field, label, rule, metadata);
 }
 
+/**
+ * Rule 6(1)(d) proviso — Best Before / Expiry Date
+ */
 export function extractBestBefore(text, confMul, metadata = {}) {
   const field = 'bestBefore';
   const label = 'Best Before / Expiry Date';
@@ -275,11 +400,15 @@ export function extractBestBefore(text, confMul, metadata = {}) {
   return notDetected(field, label, rule, metadata);
 }
 
+/**
+ * Rule 6(1)(g) — Country of Origin
+ */
 export function extractCountryOfOrigin(text, confMul, metadata = {}) {
   const field = 'countryOfOrigin';
   const label = 'Country of Origin';
   const rule = 'Rule 6(1)(g)';
 
+  // 1. Explicit Country of Origin: "Country of Origin: India", "Made in India", "Product of India"
   const patterns = [
     /(?:country\s*of\s*origin|origin\s*country)\s*[:\-]?\s*([A-Za-z\s]{3,30})/i,
     /(?:made\s*in|product\s*of|produced\s*in|assembled\s*in)\s*[:\-]?\s*([A-Za-z\s]{3,30})/i,
@@ -290,42 +419,76 @@ export function extractCountryOfOrigin(text, confMul, metadata = {}) {
     if (m) {
       const country = m[1].split(/\n/)[0].trim().replace(/[,;\-_.]+$/, '');
       if (country.length >= 3) {
-        return makeDeclaration(field, label, country, 92 * confMul, 'detected', rule, m[0], metadata);
+        return makeDeclaration(field, label, country, 95 * confMul, 'detected', rule, m[0], metadata);
       }
+    }
+  }
+
+  // 2. Address / State suffix indicating India: "MP - INDIA", "Ratlam, MP - INDIA", "Mumbai, INDIA"
+  const indiaMatch = text.match(/(?:[A-Za-z]{2,15}\s*[-–,]\s*)?(?:INDIA|Bharat)\b/i);
+  if (indiaMatch) {
+    return makeDeclaration(field, label, 'India', 94 * confMul, 'detected', rule, indiaMatch[0], metadata);
+  }
+
+  // 3. GS1 Barcode Prefix lookup (890 = GS1 India)
+  const detectedBarcodes = metadata.detectedBarcodes || [];
+  for (const bc of detectedBarcodes) {
+    if (bc.country) {
+      return makeDeclaration(
+        field,
+        label,
+        bc.country,
+        92 * confMul,
+        'detected',
+        rule,
+        `Verified via GS1 Barcode (${bc.rawValue})`,
+        metadata
+      );
     }
   }
 
   return notDetected(field, label, rule, metadata);
 }
 
+/**
+ * Rule 6(1)(n) — Consumer Care Details
+ */
 export function extractConsumerCare(text, confMul, metadata = {}) {
   const field = 'consumerCare';
   const label = 'Consumer Care Details';
   const rule = 'Rule 6(1)(n)';
 
+  // 1. Explicit section
   const sectionMatch = text.match(
-    /(?:consumer\s*(?:care|helpline|grievance|complaint)|customer\s*(?:care|service|support|helpline)|grievance|toll\s*free|helpline)\s*[:\-]?\s*([\s\S]{5,150}?)(?=\n\s*(?:mfg|exp|batch|mrp|$))/i
+    /(?:consumer\s*(?:care|helpline|grievance|complaint)|customer\s*(?:care|service|support|helpline)|grievance|toll\s*free|helpline|feedback|scan\s*for)\s*[:\-]?\s*([\s\S]{5,150}?)(?=\n\s*(?:mfg|exp|batch|mrp|$))/i
   );
 
   if (sectionMatch) {
     let val = sectionMatch[1].replace(/\n+/g, ', ').replace(/\s{2,}/g, ' ').trim().replace(/[,;.]+$/, '');
-    return makeDeclaration(field, label, val, 90 * confMul, 'detected', rule, sectionMatch[0], metadata);
+    return makeDeclaration(field, label, val, 92 * confMul, 'detected', rule, sectionMatch[0], metadata);
   }
 
-  const phoneMatch = text.match(/(?:1800[\s\-]?\d{3}[\s\-]?\d{3,4}|(?:\+91[\s\-]?|0)?[1-9]\d{9})/i);
+  // 2. Phone, Email, Website matches (filter out 12-14 digit standalone barcodes from phone match)
+  const textWithoutBarcodes = text.replace(/\b\d{12,14}\b/g, '');
+  const phoneMatch = textWithoutBarcodes.match(/(?:\+91[\s\-]?)?[6-9]\d{4}[\s\-]?\d{5}\b|1800[\s\-]?\d{3}[\s\-]?\d{3,4}\b/i);
   const emailMatch = text.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/i);
+  const webMatch = text.match(/(?:www\.[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}|https?:\/\/[a-zA-Z0-9.\-]+)/i);
 
-  if (phoneMatch || emailMatch) {
+  if (phoneMatch || emailMatch || webMatch) {
     const parts = [];
     if (phoneMatch) parts.push(`Ph: ${phoneMatch[0].trim()}`);
     if (emailMatch) parts.push(`Email: ${emailMatch[0].trim()}`);
+    if (webMatch) parts.push(`Web: ${webMatch[0].trim()}`);
     const combined = parts.join(', ');
-    return makeDeclaration(field, label, combined, 78 * confMul, 'needs_review', rule, combined, metadata);
+    return makeDeclaration(field, label, combined, 90 * confMul, 'detected', rule, combined, metadata);
   }
 
   return notDetected(field, label, rule, metadata);
 }
 
+/**
+ * Rule 6(1)(h) — Unit Sale Price
+ */
 export function extractUnitSalePrice(text, confMul, metadata = {}) {
   const field = 'unitSalePrice';
   const label = 'Unit Sale Price';
@@ -345,6 +508,9 @@ export function extractUnitSalePrice(text, confMul, metadata = {}) {
   return notDetected(field, label, rule, metadata);
 }
 
+/**
+ * FSSAI License (for food items)
+ */
 export function extractFSSAILicense(text, confMul, metadata = {}) {
   const field = 'fssaiLicense';
   const label = 'FSSAI License';
@@ -364,6 +530,9 @@ export function extractFSSAILicense(text, confMul, metadata = {}) {
   return notDetected(field, label, rule, metadata);
 }
 
+/**
+ * Rule 6(1)(q) — Batch / Lot Number
+ */
 export function extractBatchNumber(text, confMul, metadata = {}) {
   const field = 'batchNumber';
   const label = 'Batch / Lot Number';

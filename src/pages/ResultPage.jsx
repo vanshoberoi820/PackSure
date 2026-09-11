@@ -1,13 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, FileText, CheckCircle, ShieldAlert, ArrowRight, ShieldCheck, ShoppingCart, Calendar, Clock } from 'lucide-react';
+import { ArrowLeft, FileText, CheckCircle, ShieldAlert, ArrowRight, ShieldCheck, ShoppingCart, Calendar, Clock, Barcode, QrCode, CheckCircle2 } from 'lucide-react';
 import { getInspection } from '../utils/storage';
 import { generateReport } from '../engine/reportEngine';
 import { evaluateDateCompliance } from '../engine/complianceEngine';
 import ScoreCircle from '../components/ScoreCircle';
 import DeclarationCard from '../components/DeclarationCard';
 import StatusBadge from '../components/StatusBadge';
-
 
 export default function ResultPage() {
   const { id } = useParams();
@@ -35,7 +34,7 @@ export default function ResultPage() {
     );
   }
 
-  const { compliance, declarations, status } = inspection;
+  const { compliance, declarations, status, detectedBarcodes } = inspection;
 
   const handleGeneratePdf = async () => {
     setGeneratingPdf(true);
@@ -88,6 +87,53 @@ export default function ResultPage() {
             ))}
           </div>
         </div>
+
+        {/* Barcode & QR Code Section */}
+        {detectedBarcodes && detectedBarcodes.length > 0 && (
+          <div className="card p-4 border border-indigo-100 bg-gradient-to-br from-white via-white to-indigo-50/30 shadow-sm space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-indigo-50 border border-indigo-200/60 flex items-center justify-center text-indigo-600 shadow-xs">
+                  <Barcode className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-gray-900 leading-tight">Barcode & Identification</h3>
+                  <p className="text-[10px] text-gray-500 font-medium">GS1 Registry & Checksum Verification</p>
+                </div>
+              </div>
+              <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                Valid Checksum
+              </span>
+            </div>
+
+            <div className="space-y-2 pt-1 border-t border-gray-100">
+              {detectedBarcodes.map((bc, idx) => (
+                <div key={idx} className="bg-gray-50/80 p-2.5 rounded-xl border border-gray-100 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-7 h-7 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center shrink-0">
+                      {bc.type === 'qr' ? <QrCode className="w-3.5 h-3.5" /> : <Barcode className="w-3.5 h-3.5" />}
+                    </div>
+                    <div className="min-w-0">
+                      <span className="text-[10px] font-bold text-gray-400 block uppercase">
+                        {bc.type === 'qr' ? 'QR Code Payload' : `${bc.format || 'EAN-13'} Code`}
+                      </span>
+                      <p className="text-xs font-mono font-bold text-gray-800 truncate">
+                        {bc.rawValue}
+                      </p>
+                    </div>
+                  </div>
+
+                  {bc.country && (
+                    <span className="bg-emerald-100/70 text-emerald-800 text-[11px] font-bold px-2 py-0.5 rounded-md shrink-0 ml-2">
+                      {bc.countryFlag} {bc.country}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Potential Issues / Violations */}
         {compliance.violations && compliance.violations.length > 0 && (
@@ -229,7 +275,6 @@ export default function ResultPage() {
             ))}
           </div>
         </div>
-
 
         {/* E-commerce Comparison Promo */}
         <div className="card bg-gradient-to-r from-primary-50 to-blue-50/50 border-primary-100 p-4 flex items-center justify-between gap-4">

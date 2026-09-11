@@ -1,9 +1,11 @@
 /* ─────────────────────────────────────────────
-   OCR Engine — Tesseract.js Worker Pool & Multi-Candidate Recognition
+   OCR Engine — Tesseract.js Worker Pool & Multi-Orientation Recognition
+   Includes multi-angle fallback (0°, 90°, 270°, 180°) & Barcode detection
    ───────────────────────────────────────────── */
 import { createWorker } from 'tesseract.js';
-import { generateOCRCandidates, preprocessImage, resizeImage } from '../utils/imageUtils';
-import { normalizeOCRText } from '../utils/ocrNormalization';
+import { preprocessImage, resizeImage, rotateImage } from '../utils/imageUtils.js';
+import { normalizeOCRText } from '../utils/ocrNormalization.js';
+import { detectBarcodes } from './barcodeEngine.js';
 
 let cachedWorker = null;
 let isInitializing = false;
@@ -32,7 +34,7 @@ async function getOCRWorker(onProgress = () => {}) {
       });
 
       await worker.setParameters({
-        tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz₹/.:,;()-\'%&@#+* "[]',
+        tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz₹Rs/.:,;()-\'%&@#+* "[]_®|!?~',
         preserve_interword_spaces: '1',
       });
 
@@ -51,20 +53,29 @@ async function getOCRWorker(onProgress = () => {}) {
 
 export async function performOCR(imageDataUrl, onProgress = () => {}) {
   try {
-    onProgress({ step: 0, label: 'Optimizing label resolution…', progress: 20 });
+    onProgress({ step: 0, label: 'Optimizing label resolution…', progress: 15 });
 
-    // Resize to optimal OCR resolution (1200x1200 max) for 2.5x faster inference
-    const optimizedImg = await resizeImage(imageDataUrl, 1200, 1200, 0.92);
-    const enhancedImg = await preprocessImage(optimizedImg, 1.4);
+    // Resize to high-clarity OCR resolution (1600x1600)
+    const optimizedImg = await resizeImage(imageDataUrl, 1600, 1600, 0.95);
+    const enhancedImg = await preprocessImage(optimizedImg, 1.45);
 
-    onProgress({ step: 1, label: 'Running deep OCR text extraction…', progress: 45 });
+    onProgress({ step: 1, label: 'Scanning Barcodes, QR & Declarations…', progress: 35 });
+
+    // Scan Barcodes & QR codes concurrently
+    let detectedBarcodes = [];
+    try {
+      detectedBarcodes = await detectBarcodes(optimizedImg);
+    } catch (bcErr) {
+      console.warn('Barcode scan during OCR skipped:', bcErr);
+    }
+
+    onProgress({ step: 1, label: 'Running deep OCR text extraction…', progress: 50 });
     const worker = await getOCRWorker(onProgress);
 
     const primaryResult = await worker.recognize(enhancedImg);
-
     let text = normalizeOCRText(primaryResult.data.text || '');
     let confidence = primaryResult.data.confidence || 0;
-    const words = (primaryResult.data.words || []).map((w) => ({
+    let words = (primaryResult.data.words || []).map((w) => ({
       text: w.text,
       confidence: w.confidence,
       bbox: w.bbox,
@@ -72,38 +83,71 @@ export async function performOCR(imageDataUrl, onProgress = () => {}) {
 
     const candidateTexts = [text];
 
-    // If text is brief and confidence is low, run a quick secondary pass with original
-    if (text.length < 30) {
-      onProgress({ step: 1, label: 'Refining secondary text pass…', progress: 75 });
-      try {
-        const secondaryResult = await worker.recognize(optimizedImg);
-        const secondaryText = normalizeOCRText(secondaryResult.data.text || '');
-        if (secondaryText.length > text.length) {
-          text = `${text}\n${secondaryText}`.trim();
-          confidence = Math.max(confidence, secondaryResult.data.confidence || 0);
-          candidateTexts.push(secondaryText);
+    // If text length is low or confidence is sparse, test rotated views (90°, 270°, 180°)
+    if (text.length < 50 || confidence < 55) {
+      const angles = [90, 270, 180];
+      for (const angle of angles) {
+        onProgress({ step: 1, label: `Testing label orientation (${angle}°)…`, progress: 70 });
+        try {
+          const rotatedImg = await rotateImage(enhancedImg, angle);
+          const rotatedResult = await worker.recognize(rotatedImg);
+          const rotText = normalizeOCRText(rotatedResult.data.text || '');
+          const rotConf = rotatedResult.data.confidence || 0;
+
+          if (rotText.length > text.length || rotConf > confidence + 10) {
+            text = rotText;
+            confidence = Math.max(confidence, rotConf);
+            words = (rotatedResult.data.words || []).map((w) => ({
+              text: w.text,
+              confidence: w.confidence,
+              bbox: w.bbox,
+            }));
+            candidateTexts.push(rotText);
+
+            // Also check barcodes on rotated image if not found yet
+            if (detectedBarcodes.length === 0) {
+              const rotBc = await detectBarcodes(rotatedImg);
+              if (rotBc.length > 0) detectedBarcodes = rotBc;
+            }
+          }
+        } catch (rotErr) {
+          console.warn(`Rotation ${angle}° OCR pass skipped:`, rotErr);
         }
-      } catch (e) {
-        console.warn('Secondary OCR pass skipped:', e);
       }
     }
 
-    onProgress({ step: 2, label: 'Text recognition complete', progress: 100 });
+    // If still sparse, test original non-preprocessed image
+    if (text.length < 30) {
+      try {
+        const secondaryResult = await worker.recognize(optimizedImg);
+        const secText = normalizeOCRText(secondaryResult.data.text || '');
+        if (secText.length > text.length) {
+          text = `${text}\n${secText}`.trim();
+          confidence = Math.max(confidence, secondaryResult.data.confidence || 0);
+          candidateTexts.push(secText);
+        }
+      } catch (e) {
+        // secondary pass ignored
+      }
+    }
+
+    onProgress({ step: 2, label: 'Text & Barcode recognition complete', progress: 100 });
 
     return {
       text: text || '',
-      confidence: Math.round(confidence || (text.length > 10 ? 70 : 40)),
+      confidence: Math.round(confidence || (text.length > 10 ? 75 : 40)),
       words,
       candidateTexts,
+      detectedBarcodes,
     };
   } catch (error) {
     console.error('OCR Engine Error:', error);
-    // Return graceful fallback object instead of throwing to prevent crashing the scanning pipeline
     return {
       text: '',
       confidence: 0,
       words: [],
       candidateTexts: [],
+      detectedBarcodes: [],
     };
   }
 }
@@ -120,10 +164,15 @@ export async function performFrameOCR(frameDataUrl) {
       bbox: w.bbox,
     }));
 
-    return { text, confidence: confidence || (text.length > 5 ? 70 : 30), words };
+    let detectedBarcodes = [];
+    try {
+      detectedBarcodes = await detectBarcodes(frameDataUrl);
+    } catch (_) {}
+
+    return { text, confidence: confidence || (text.length > 5 ? 70 : 30), words, detectedBarcodes };
   } catch (err) {
     console.warn('Frame OCR error:', err);
-    return { text: '', confidence: 0, words: [] };
+    return { text: '', confidence: 0, words: [], detectedBarcodes: [] };
   }
 }
 
@@ -161,4 +210,3 @@ export function assessImageQuality(ocrResult) {
     usable: true,
   };
 }
-

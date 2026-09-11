@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, AlertTriangle, XCircle, Eye, Shield } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, AlertTriangle, XCircle, Eye, Shield, Barcode, QrCode } from 'lucide-react';
 import { getInspection } from '../utils/storage';
 import StatusBadge from '../components/StatusBadge';
 
@@ -60,6 +60,34 @@ export default function EvidencePage() {
           </div>
         </div>
 
+        {/* Barcode Evidence */}
+        {inspection.detectedBarcodes && inspection.detectedBarcodes.length > 0 && (
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 space-y-3">
+            <h2 className="text-sm font-semibold text-slate-700 flex items-center">
+              <Barcode className="w-4 h-4 mr-1.5 text-indigo-500" />
+              Scanned Barcode & QR Evidence
+            </h2>
+            <div className="space-y-2">
+              {inspection.detectedBarcodes.map((bc, idx) => (
+                <div key={idx} className="bg-slate-50 p-3 rounded-lg border border-slate-200/70 flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    {bc.type === 'qr' ? <QrCode className="w-4 h-4 text-indigo-600" /> : <Barcode className="w-4 h-4 text-indigo-600" />}
+                    <div>
+                      <span className="font-bold text-slate-800 font-mono">{bc.rawValue}</span>
+                      <span className="text-[10px] text-slate-400 block">{bc.format || 'Barcode'}</span>
+                    </div>
+                  </div>
+                  {bc.country && (
+                    <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                      {bc.countryFlag} {bc.country}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Declarations Evidence */}
         <div className="space-y-4">
           <h2 className="text-sm font-semibold text-slate-700 flex items-center">
@@ -96,6 +124,11 @@ export default function EvidencePage() {
                     <div className="bg-slate-50 p-2.5 rounded text-sm text-slate-800 font-medium mb-3 border border-slate-100 break-words">
                       {dec.value}
                     </div>
+                    {dec.evidence && dec.evidence !== dec.value && (
+                      <p className="text-[11px] text-slate-500 italic mb-2">
+                        OCR Snippet: &quot;{dec.evidence}&quot;
+                      </p>
+                    )}
                     {(() => {
                       const confVal = dec.confidence > 1 ? Math.round(dec.confidence) : Math.round((dec.confidence || 0) * 100);
                       return (

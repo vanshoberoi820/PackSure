@@ -1,5 +1,6 @@
 /* ─────────────────────────────────────────────
    Image Utilities — High-Fidelity Preprocessing & Normalization
+   Multi-angle rotation, adaptive contrast & candidate generation
    ───────────────────────────────────────────── */
 
 export function imageToBase64(file) {
@@ -32,6 +33,33 @@ export function resizeImage(dataUrl, maxWidth = 1800, maxHeight = 1800, quality 
       ctx.drawImage(img, 0, 0, width, height);
 
       resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+export function rotateImage(dataUrl, degrees) {
+  if (!degrees || degrees % 360 === 0) return Promise.resolve(dataUrl);
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const rad = (degrees * Math.PI) / 180;
+      const is90or270 = Math.abs(degrees % 180) === 90;
+      const w = is90or270 ? img.height : img.width;
+      const h = is90or270 ? img.width : img.height;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+      ctx.translate(w / 2, h / 2);
+      ctx.rotate(rad);
+      ctx.drawImage(img, -img.width / 2, -img.height / 2);
+
+      resolve(canvas.toDataURL('image/jpeg', 0.95));
     };
     img.onerror = () => resolve(dataUrl);
     img.src = dataUrl;

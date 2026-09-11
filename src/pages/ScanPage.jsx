@@ -18,13 +18,15 @@ import {
   Scale,
   Building2,
   Bot,
-  Radio,
+  Barcode,
+  QrCode,
   CheckCircle2,
 } from 'lucide-react';
 import { performOCR, assessImageQuality } from '../engine/ocrEngine';
 import { extractDeclarations } from '../engine/extractionEngine';
 import { evaluateCompliance } from '../engine/complianceEngine';
 import { analyzeVideoFrames } from '../engine/videoAnalysisEngine';
+import { detectBarcodes } from '../engine/barcodeEngine';
 import {
   saveInspection,
   generateInspectionId,
@@ -78,6 +80,7 @@ export default function ScanPage() {
   const [recordingStream, setRecordingStream] = useState(null);
   const [recordingProgress, setRecordingProgress] = useState({ elapsedMs: 0, remainingSec: 8, progressPct: 0 });
   const [videoBlob, setVideoBlob] = useState(null);
+  const [liveBarcodes, setLiveBarcodes] = useState([]);
 
   // Voice Assistant states
   const [keyDeclarations, setKeyDeclarations] = useState([]);
@@ -97,10 +100,40 @@ export default function ScanPage() {
     };
   }, [recordingStream]);
 
+  // Real-time Barcode scanning loop during live video
+  useEffect(() => {
+    let intervalId;
+    if (step === 'recording_video' && liveVideoRef.current) {
+      intervalId = setInterval(async () => {
+        if (liveVideoRef.current && liveVideoRef.current.readyState >= 2) {
+          try {
+            const barcodes = await detectBarcodes(liveVideoRef.current);
+            if (barcodes && barcodes.length > 0) {
+              setLiveBarcodes(barcodes);
+            }
+          } catch (_) {}
+        }
+      }, 600);
+    }
+    return () => clearInterval(intervalId);
+  }, [step]);
+
+  // Scan preview image for barcodes immediately upon upload
+  useEffect(() => {
+    if (step === 'preview' && image) {
+      detectBarcodes(image).then((bc) => {
+        if (bc && bc.length > 0) {
+          setLiveBarcodes(bc);
+        }
+      }).catch(() => {});
+    }
+  }, [step, image]);
+
   // Handle Photo / File Source
   const handleSelectSource = (mode) => {
     setError(null);
     setScanType('image');
+    setLiveBarcodes([]);
     if (mode === 'camera') {
       fileInputRef.current?.setAttribute('capture', 'environment');
     } else {
@@ -121,6 +154,11 @@ export default function ScanPage() {
       const base64 = await imageToBase64(file);
       const highRes = await resizeImage(base64, 1800, 1800, 0.95);
       setImage(highRes);
+
+      // Trigger instant background barcode scan
+      detectBarcodes(highRes).then((bcs) => {
+        if (bcs && bcs.length > 0) setLiveBarcodes(bcs);
+      });
     } catch (err) {
       console.error(err);
       setError('Failed to load image. Please try again.');
@@ -131,6 +169,7 @@ export default function ScanPage() {
   // Start 8-Second Video Recording Flow
   const handleStartRecordingVideo = async () => {
     setError(null);
+    setLiveBarcodes([]);
     if (!isVideoRecordingSupported()) {
       setError('Video recording is not supported in this browser. Please use Photo or Upload.');
       return;
@@ -195,6 +234,9 @@ export default function ScanPage() {
     setError(null);
     setIsDemo(true);
     setScanType('demo');
+    setLiveBarcodes([
+      { rawValue: '8904389809211', format: 'EAN_13', type: 'barcode', country: 'India', countryFlag: '🇮🇳', isValidChecksum: true }
+    ]);
     setStep('preview');
     const demoInspection = getDemoInspection('TEMP');
     setImage(demoInspection.productImage);
@@ -212,6 +254,7 @@ export default function ScanPage() {
     setError(null);
     setActiveVoiceIndex(-1);
     setCompletedIndices([]);
+    setLiveBarcodes([]);
   };
 
   // Stop Voice & Go Directly to Report
@@ -260,6 +303,10 @@ export default function ScanPage() {
         setVoiceStatusText(p.label);
       });
 
+      const finalBarcodes = videoResult.detectedBarcodes?.length > 0
+        ? videoResult.detectedBarcodes
+        : liveBarcodes;
+
       const newInspection = {
         id: inspectionId,
         productImage: videoResult.productImage,
@@ -268,6 +315,7 @@ export default function ScanPage() {
         ocrConfidence: videoResult.ocrConfidence,
         declarations: videoResult.declarations,
         compliance: videoResult.compliance,
+        detectedBarcodes: finalBarcodes,
         scanMetadata: videoResult.scanMetadata,
         frameResults: videoResult.frameResults,
         officerReview: {
@@ -337,6 +385,7 @@ export default function ScanPage() {
       await new Promise((r) => setTimeout(r, 600));
 
       const demoInspection = getDemoInspection(inspectionId);
+      demoInspection.detectedBarcodes = liveBarcodes;
       saveInspection(demoInspection);
 
       const items = buildKeyDeclarationsData(
@@ -376,7 +425,7 @@ export default function ScanPage() {
     try {
       setAnalysisProgress({ step: 0, label: 'Optimizing label readability…', progress: 10 });
       setVoiceStatusText('Enhancing resolution & contrast…');
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 300));
 
       const ocrResult = await performOCR(image, (p) => {
         setAnalysisProgress({
@@ -387,6 +436,10 @@ export default function ScanPage() {
         setVoiceStatusText(p.label);
       });
 
+      const finalBarcodes = ocrResult.detectedBarcodes?.length > 0
+        ? ocrResult.detectedBarcodes
+        : liveBarcodes;
+
       const qualityAssess = assessImageQuality(ocrResult);
       if (!qualityAssess.usable) {
         setError(qualityAssess.message);
@@ -396,7 +449,10 @@ export default function ScanPage() {
 
       setAnalysisProgress({ step: 3, label: 'Extracting legal declarations…', progress: 65 });
       setVoiceStatusText('Parsing Legal Metrology declarations…');
-      const declarations = extractDeclarations(ocrResult.text, ocrResult.confidence, { source: 'single_image' });
+      const declarations = extractDeclarations(ocrResult.text, ocrResult.confidence, {
+        source: 'single_image',
+        detectedBarcodes: finalBarcodes,
+      });
 
       setAnalysisProgress({ step: 4, label: 'Legal Metrology compliance check…', progress: 90 });
       const compliance = evaluateCompliance(declarations, ocrResult.confidence, ocrResult.text);
@@ -409,6 +465,7 @@ export default function ScanPage() {
         ocrConfidence: ocrResult.confidence,
         declarations,
         compliance,
+        detectedBarcodes: finalBarcodes,
         scanMetadata: {
           type: 'image',
           durationSeconds: null,
@@ -541,7 +598,7 @@ export default function ScanPage() {
                     </span>
                   </div>
                   <p className="text-[11px] text-primary-100 mt-0.5">
-                    Multi-frame OCR captures all sides & crimps automatically
+                    Multi-frame OCR + Barcode detection across all angles
                   </p>
                 </div>
               </div>
@@ -637,12 +694,43 @@ export default function ScanPage() {
                 Move Slowly Around Product
               </span>
             </div>
+
+            {/* Live Detected Barcode Pill Overlay (Google Lens style) */}
+            {liveBarcodes.length > 0 && (
+              <div className="absolute bottom-4 left-4 right-4 z-20 flex flex-col items-center gap-2 pointer-events-auto animate-fade-in">
+                {liveBarcodes.map((bc, idx) => (
+                  <div
+                    key={idx}
+                    className="bg-slate-900/90 backdrop-blur-md border border-white/25 text-white px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-3 text-xs max-w-sm w-full"
+                  >
+                    <div className="w-8 h-8 rounded-xl bg-primary-600 flex items-center justify-center text-white shrink-0 shadow-sm">
+                      {bc.type === 'qr' ? <QrCode className="w-4 h-4" /> : <Barcode className="w-4 h-4" />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold text-white text-xs">
+                          {bc.type === 'qr' ? 'QR Code Detected' : 'Barcode Detected'}
+                        </span>
+                        {bc.country && (
+                          <span className="bg-emerald-500/20 text-emerald-300 font-semibold text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/30">
+                            {bc.countryFlag} {bc.country}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] font-mono text-gray-300 truncate mt-0.5">
+                        {bc.rawValue}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Bottom Guidance & Actions */}
           <div className="relative z-10 space-y-3 pt-3">
             <p className="text-xs text-center text-gray-300">
-              💡 Rotate the package slowly to capture MRP, Dates, Weight & Manufacturer.
+              💡 Rotate package slowly to capture MRP, Dates, Weight/Pages & Barcode.
             </p>
 
             <div className="grid grid-cols-2 gap-3">
@@ -680,6 +768,33 @@ export default function ScanPage() {
               <span className="absolute top-3 right-3 bg-amber-600 text-white text-[10px] font-bold px-2.5 py-1 rounded-full shadow">
                 DEMO MODE
               </span>
+            )}
+
+            {/* Live Detected Barcode Pill Overlay on Preview */}
+            {liveBarcodes.length > 0 && (
+              <div className="absolute bottom-3 left-3 right-3 z-20 flex flex-col items-center gap-1.5">
+                {liveBarcodes.map((bc, idx) => (
+                  <div
+                    key={idx}
+                    className="bg-slate-900/90 backdrop-blur-md border border-white/25 text-white px-3.5 py-2 rounded-xl shadow-xl flex items-center gap-2.5 text-xs max-w-sm w-full"
+                  >
+                    <div className="w-7 h-7 rounded-lg bg-primary-600 flex items-center justify-center text-white shrink-0">
+                      {bc.type === 'qr' ? <QrCode className="w-3.5 h-3.5" /> : <Barcode className="w-3.5 h-3.5" />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 font-bold text-white text-[11px]">
+                        <span>{bc.type === 'qr' ? 'QR Code' : 'Barcode'}</span>
+                        {bc.country && (
+                          <span className="bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.2 rounded border border-emerald-500/30">
+                            {bc.countryFlag} {bc.country}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] font-mono text-gray-300 truncate">{bc.rawValue}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
 
@@ -720,7 +835,7 @@ export default function ScanPage() {
                     AI Voice Compliance Assistant
                   </h2>
                   <p className="text-[11px] text-primary-200 font-medium leading-none">
-                    {scanType === 'video' ? 'Multi-Frame Legal Metrology Consensus' : 'Auditing Legal Metrology Declarations'}
+                    {scanType === 'video' ? 'Multi-Frame Legal Metrology Consensus' : 'Auditing Legal Metrology Rule 6 Declarations'}
                   </p>
                 </div>
               </div>
@@ -827,7 +942,7 @@ export default function ScanPage() {
                 <div className="w-12 h-12 border-3 border-primary-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
                 <p className="text-sm font-semibold text-gray-700">{analysisProgress.label || 'Detecting declarations…'}</p>
                 <p className="text-xs text-gray-400">
-                  {scanType === 'video' ? '8-second multi-frame consensus engine' : 'Tesseract OCR engine running in browser'}
+                  {scanType === 'video' ? '8-second multi-frame consensus engine' : 'Tesseract OCR + Barcode engine running in browser'}
                 </p>
               </div>
             )}

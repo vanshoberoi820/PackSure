@@ -1,13 +1,13 @@
 /* ─────────────────────────────────────────────
    Compliance Engine — Legal Metrology (Packaged Commodities) Rules, 2011
-   Full rule mapping, structured violation explanations, and date/expiry evaluation
+   Rule 6 Statutory Compliance Assessment with weight/measure/number evaluation
    ───────────────────────────────────────────── */
 
 export const LEGAL_METROLOGY_RULES = [
   {
     field: 'productName',
     rule: 'Rule 6(1)(b)',
-    ruleName: 'Commodity Generic Name',
+    ruleName: 'Commodity Common / Generic Name',
     requirement: 'The generic or common name of the commodity contained in the package.',
     weight: 15,
     severity: 'high',
@@ -15,8 +15,8 @@ export const LEGAL_METROLOGY_RULES = [
   {
     field: 'manufacturer',
     rule: 'Rule 6(1)(a)',
-    ruleName: 'Manufacturer / Packer Identity',
-    requirement: 'Name and complete address of the manufacturer or packer.',
+    ruleName: 'Manufacturer / Packer Identity & Address',
+    requirement: 'Name and complete address of the manufacturer, packer, or importer.',
     weight: 15,
     severity: 'high',
   },
@@ -24,7 +24,7 @@ export const LEGAL_METROLOGY_RULES = [
     field: 'netQuantity',
     rule: 'Rule 6(1)(c)',
     ruleName: 'Net Quantity Declaration',
-    requirement: 'Net quantity in terms of standard units of weight, measure, or number.',
+    requirement: 'Net quantity in standard units of weight, measure/volume, or number/pages.',
     weight: 15,
     severity: 'high',
   },
@@ -32,14 +32,14 @@ export const LEGAL_METROLOGY_RULES = [
     field: 'mrp',
     rule: 'Rule 6(1)(e)',
     ruleName: 'Maximum Retail Price (MRP)',
-    requirement: 'Maximum Retail Price inclusive of all taxes in Indian Rupees.',
+    requirement: 'Maximum Retail Price inclusive of all taxes in Indian Rupees (Rs. or ₹).',
     weight: 15,
     severity: 'high',
   },
   {
     field: 'manufacturingDate',
     rule: 'Rule 6(1)(d)',
-    ruleName: 'Month & Year of Manufacture',
+    ruleName: 'Month & Year of Manufacture / Packing',
     requirement: 'Month and year in which the commodity is manufactured, packed, or imported.',
     weight: 15,
     severity: 'high',
@@ -47,8 +47,8 @@ export const LEGAL_METROLOGY_RULES = [
   {
     field: 'consumerCare',
     rule: 'Rule 6(1)(n)',
-    ruleName: 'Consumer Care Helpline',
-    requirement: 'Name, address, telephone number, or email of the person who can be contacted for consumer complaints.',
+    ruleName: 'Consumer Care Details',
+    requirement: 'Name, address, telephone number, email, or website for consumer grievance redressal.',
     weight: 10,
     severity: 'medium',
   },
@@ -56,7 +56,7 @@ export const LEGAL_METROLOGY_RULES = [
     field: 'countryOfOrigin',
     rule: 'Rule 6(1)(g)',
     ruleName: 'Country of Origin',
-    requirement: 'Country of origin or manufacture for all pre-packaged commodities.',
+    requirement: 'Country of origin or manufacture for pre-packaged commodities.',
     weight: 10,
     severity: 'medium',
   },
@@ -64,7 +64,7 @@ export const LEGAL_METROLOGY_RULES = [
     field: 'bestBefore',
     rule: 'Rule 6(1)(d) proviso',
     ruleName: 'Best Before / Expiry Date',
-    requirement: 'Mandatory best before or expiry date for commodities that may become unfit for consumption over time.',
+    requirement: 'Mandatory best before or expiry date for commodities that become unfit over time.',
     weight: 10,
     severity: 'medium',
     conditional: true,
@@ -95,15 +95,15 @@ export function identifyCommodityCategory(productName = '', rawText = '') {
   ];
 
   const nonPerishableKeywords = [
+    'notebook', 'stationery', 'paper', 'book', 'pages', 'diary', 'register', 'pen', 'pencil',
+    'eraser', 'sharpener', 'ruler', 'scale', 'scissor', 'stapler', 'folder', 'envelope',
     'cable', 'charger', 'adapter', 'usb', 'headphone', 'earphone', 'earbuds', 'mouse', 'keyboard',
     'led', 'bulb', 'wire', 'phone', 'laptop', 'camera', 'electronic', 'appliance', 'hardware',
     'shirt', 't-shirt', 'tshirt', 'trousers', 'jeans', 'pant', 'socks', 'garment', 'apparel', 'textile',
     'fabric', 'cotton', 'silk', 'polyester', 'wool', 'shoe', 'shoes', 'footwear', 'sandal', 'slipper',
-    'pen', 'pencil', 'notebook', 'eraser', 'sharpener', 'ruler', 'scale', 'scissor', 'paper', 'stationery',
-    'book', 'stapler', 'folder', 'envelope', 'cookware', 'pan', 'pot', 'utensil', 'plate', 'spoon',
-    'fork', 'knife', 'steel', 'plastic container', 'bucket', 'bottle', 'mug', 'cup', 'glassware',
-    'screw', 'tool', 'screwdriver', 'wrench', 'bag', 'backpack', 'wallet', 'belt', 'luggage',
-    'suitcase', 'toy', 'board game', 'furniture', 'cushion'
+    'cookware', 'pan', 'pot', 'utensil', 'plate', 'spoon', 'fork', 'knife', 'steel', 'plastic container',
+    'bucket', 'bottle', 'mug', 'cup', 'glassware', 'screw', 'tool', 'screwdriver', 'wrench',
+    'bag', 'backpack', 'wallet', 'belt', 'luggage', 'suitcase', 'toy', 'board game', 'furniture'
   ];
 
   if (foodKeywords.some(kw => new RegExp(`\\b${kw}\\b`, 'i').test(text))) {
@@ -129,7 +129,7 @@ export function identifyCommodityCategory(productName = '', rawText = '') {
       isExpiryApplicable: false,
       category: 'non_perishable_durable',
       categoryName: 'Non-Perishable / Durable Commodity',
-      reason: 'Durable & non-perishable commodities are exempt from Best Before / Expiry declaration under Legal Metrology Rule 6(1)(d) proviso.',
+      reason: 'Durable & non-perishable commodities (e.g. stationery, notebooks, hardware) are exempt from Best Before / Expiry declaration under Legal Metrology Rule 6(1)(d) proviso.',
     };
   }
 
@@ -265,24 +265,11 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
           severity: 'high',
           status: 'future_dated',
           requirement: 'Manufacturing date must represent the actual or past packing date.',
-          message: `Manufacturing date (${mfgDecl.value}) is post-dated relative to the audit date. Post-dating package labels is an offense under Legal Metrology Rule 6(1)(d).`,
-          recommendation: 'Issue notice to manufacturer for post-dated packaging compliance inquiry.',
+          message: `Manufacturing date (${mfgDecl.value}) is post-dated relative to audit date. Post-dating package labels is an offense under Legal Metrology Rule 6(1)(d).`,
+          recommendation: 'Issue notice to manufacturer for post-dated packaging inquiry.',
           confidence: 94,
         });
       }
-    } else {
-      violations.push({
-        field: 'manufacturingDate',
-        rule: 'Rule 6(1)(d)',
-        ruleName: 'Date Format Standard',
-        label: 'Manufacturing Date Format Issue',
-        severity: 'low',
-        status: 'format_issue',
-        requirement: 'Month and year must follow standard MM/YYYY or Month YYYY format.',
-        message: `Manufacturing date "${mfgDecl.value}" does not clearly follow standard Month & Year format as required under Rule 6(1)(d).`,
-        recommendation: 'Inspect physical package stamp for date clarity.',
-        confidence: 82,
-      });
     }
   }
 
@@ -332,7 +319,7 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
         severity: 'high',
         status: 'expired',
         requirement: 'Expired pre-packaged commodities cannot be offered for distribution or sale.',
-        message: `Product is EXPIRED. Expiry date was ${computedExpiry.formatted} (${Math.abs(daysToExpiry)} days ago). Distribution violates consumer safety and packaging standards.`,
+        message: `Product is EXPIRED. Expiry date was ${computedExpiry.formatted} (${Math.abs(daysToExpiry)} days ago). Distribution violates packaging standards under Rule 6(1)(d).`,
         recommendation: 'Immediate confiscation and seizure of shelf stock required.',
         confidence: 96,
       });
@@ -345,7 +332,7 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
         label: 'Near Expiry Warning',
         severity: 'medium',
         status: 'near_expiry',
-        requirement: 'Stock must be cleared before the declared expiry threshold.',
+        requirement: 'Stock must be cleared before declared expiry threshold.',
         message: `Product is NEAR EXPIRY. Expires on ${computedExpiry.formatted} (${daysToExpiry} days remaining).`,
         recommendation: 'Verify shelf life clearance schedule with retailer.',
         confidence: 90,
@@ -425,20 +412,23 @@ export function evaluateCompliance(declarations, ocrConfidence = 75, rawOcrText 
     }
 
     if (!decl || decl.status === 'not_detected') {
+      const isDurable = !commodityInfo.isExpiryApplicable;
+      const isSecondaryOnDurable = isDurable && (rule.field === 'manufacturingDate' || rule.field === 'batchNumber');
+
       violations.push({
         field: rule.field,
         rule: rule.rule,
         ruleName: rule.ruleName,
         label: `${decl?.label || rule.field} Missing`,
-        severity: rule.severity,
+        severity: isSecondaryOnDurable ? 'low' : rule.severity,
         status: 'missing',
         requirement: rule.requirement,
-        message: `${decl?.label || rule.field} was not detected on the package label. Mandatory under ${rule.rule}.`,
+        message: `${decl?.label || rule.field} was not detected on package label. Mandatory under ${rule.rule}.`,
         recommendation: `Check physical label for ${decl?.label || rule.field} declaration.`,
         confidence: 90,
       });
     } else if (decl.status === 'needs_review' || decl.status === 'uncertain') {
-      mandatoryEarned += rule.weight * 0.6;
+      mandatoryEarned += rule.weight * 0.85;
       violations.push({
         field: rule.field,
         rule: rule.rule,
@@ -447,12 +437,12 @@ export function evaluateCompliance(declarations, ocrConfidence = 75, rawOcrText 
         severity: 'low',
         status: 'needs_review',
         requirement: rule.requirement,
-        message: `${decl.label} was detected ("${decl.value}") but has lower OCR confidence. Officer review recommended.`,
+        message: `${decl.label} was detected ("${decl.value}") with partial OCR clarity. Officer confirmation recommended.`,
         recommendation: 'Inspect physical package to confirm extracted text.',
         confidence: decl.confidence || 60,
       });
     } else if (decl.status === 'conflicting') {
-      mandatoryEarned += rule.weight * 0.5;
+      mandatoryEarned += rule.weight * 0.7;
       violations.push({
         field: rule.field,
         rule: rule.rule,
@@ -461,19 +451,15 @@ export function evaluateCompliance(declarations, ocrConfidence = 75, rawOcrText 
         severity: 'medium',
         status: 'conflicting',
         requirement: rule.requirement,
-        message: `Multiple differing values were detected across video frames for ${decl.label}.`,
-        recommendation: 'Perform manual officer verification of the actual printed label.',
+        message: `Differing values were detected across video frames for ${decl.label}.`,
+        recommendation: 'Perform manual officer verification of actual printed label.',
         confidence: 70,
       });
     } else if (decl.status === 'not_applicable') {
       mandatoryEarned += rule.weight;
     } else {
+      // Detected successfully — award full points for this Legal Metrology declaration!
       mandatoryEarned += rule.weight;
-      const formatIssue = checkFormatIssues(decl, rule);
-      if (formatIssue) {
-        mandatoryEarned -= rule.weight * 0.15;
-        violations.push(formatIssue);
-      }
     }
   }
 
@@ -481,34 +467,32 @@ export function evaluateCompliance(declarations, ocrConfidence = 75, rawOcrText 
     for (const dateVio of dateAssessment.violations) {
       violations.push(dateVio);
       if (dateVio.severity === 'high') {
-        mandatoryEarned = Math.max(0, mandatoryEarned - 25);
-      } else if (dateVio.severity === 'medium') {
-        mandatoryEarned = Math.max(0, mandatoryEarned - 10);
+        mandatoryEarned = Math.max(0, mandatoryEarned - 20);
       }
     }
   }
 
-  const mandatoryScore = Math.max(0, Math.round((mandatoryEarned / mandatoryTotal) * 100));
+  // Calculate Sub-Scores
+  const mandatoryScore = Math.max(0, Math.min(100, Math.round((mandatoryEarned / mandatoryTotal) * 100)));
   const readabilityScore = Math.min(100, Math.round((ocrConfidence || 75) * 1.15));
 
+  // Alignment / formatting scoring — user requested reduced penalty impact
   let formattingDeductions = 0;
-  const detectedCount = declarations.filter((d) => d.status === 'detected' || d.status === 'not_applicable').length;
-  const needsReviewCount = declarations.filter((d) => d.status === 'needs_review' || d.status === 'uncertain').length;
-
-  if (needsReviewCount > 0) formattingDeductions += needsReviewCount * 4;
-  if (detectedCount < 4) formattingDeductions += 15;
+  const missingCount = declarations.filter((d) => d.status === 'not_detected').length;
+  if (missingCount > 4) formattingDeductions += 10;
   const formattingScore = Math.max(0, Math.min(100, 100 - formattingDeductions));
 
+  // Rebalanced weights: Mandatory Rule 6 declarations (80%), Readability (15%), Alignment/Formatting (5%)
   const overallScore = Math.round(
-    mandatoryScore * 0.60 + readabilityScore * 0.20 + formattingScore * 0.20
+    mandatoryScore * 0.80 + readabilityScore * 0.15 + formattingScore * 0.05
   );
 
   let status;
   const highViolations = violations.filter((v) => v.severity === 'high');
 
-  if (highViolations.length >= 2 || dateAssessment.isExpired || dateAssessment.isFutureDated || overallScore < 50) {
+  if (highViolations.length >= 3 || dateAssessment.isExpired || dateAssessment.isFutureDated || overallScore < 45) {
     status = 'violation';
-  } else if (overallScore >= 80 && highViolations.length === 0) {
+  } else if (overallScore >= 75 && highViolations.length <= 1) {
     status = 'compliant';
   } else {
     status = 'needs_review';
@@ -519,51 +503,13 @@ export function evaluateCompliance(declarations, ocrConfidence = 75, rawOcrText 
     status,
     commodityInfo,
     categories: {
-      mandatory: { score: mandatoryScore, label: 'Mandatory Declarations' },
+      mandatory: { score: mandatoryScore, label: 'Mandatory Rule 6 Declarations' },
       readability: { score: readabilityScore, label: 'Readability & OCR' },
-      formatting: { score: formattingScore, label: 'Rule Formatting' },
+      formatting: { score: formattingScore, label: 'Rule Formatting & Alignment' },
     },
     violations,
     dateAssessment,
   };
-}
-
-function checkFormatIssues(decl, ruleDef) {
-  if (decl.field === 'mrp') {
-    if (decl.value && !/(incl|tax)/i.test(decl.value)) {
-      return {
-        field: decl.field,
-        rule: ruleDef.rule,
-        ruleName: ruleDef.ruleName,
-        label: 'MRP Tax Declaration Standard',
-        severity: 'low',
-        status: 'format_issue',
-        requirement: 'MRP declaration must state "Inclusive of all taxes" under Rule 6(1)(e).',
-        message: 'MRP is printed without explicit "Inclusive of all taxes" text.',
-        recommendation: 'Check if tax inclusion is printed elsewhere on the carton.',
-        confidence: decl.confidence || 85,
-      };
-    }
-  }
-
-  if (decl.field === 'netQuantity') {
-    if (decl.value && /oz|ounce|pound|lb/i.test(decl.value)) {
-      return {
-        field: decl.field,
-        rule: ruleDef.rule,
-        ruleName: ruleDef.ruleName,
-        label: 'Metric Unit Compliance',
-        severity: 'medium',
-        status: 'format_issue',
-        requirement: 'Net quantity must be in standard metric units (g, kg, ml, L, N) under Rule 6(1)(c).',
-        message: 'Net quantity uses non-metric units.',
-        recommendation: 'Require metric unit dual-labeling.',
-        confidence: decl.confidence || 90,
-      };
-    }
-  }
-
-  return null;
 }
 
 export function compareDeclarations(packageDeclarations, ecomDeclarations) {

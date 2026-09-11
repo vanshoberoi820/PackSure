@@ -1,10 +1,10 @@
 /* ─────────────────────────────────────────────
    Video Analysis Engine — Multi-Frame OCR & Information Fusion
-   Combines declarations across 8-second video frames with consensus boosting and conflict detection
+   Combines declarations and barcodes across 8-second video frames
    ───────────────────────────────────────────── */
-import { performFrameOCR } from './ocrEngine';
-import { extractDeclarations } from './extractionEngine';
-import { evaluateCompliance } from './complianceEngine';
+import { performFrameOCR } from './ocrEngine.js';
+import { extractDeclarations } from './extractionEngine.js';
+import { evaluateCompliance } from './complianceEngine.js';
 
 /**
  * Run full multi-frame analysis on extracted video frames.
@@ -21,6 +21,8 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
   let combinedOcrText = '';
   let totalConfidence = 0;
   let validConfidenceCount = 0;
+  const allDetectedBarcodes = [];
+  const seenBarcodes = new Set();
 
   const panelNames = ['Front Label', 'Side Panel', 'Back Information', 'Top / Crimps'];
 
@@ -46,10 +48,20 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
       validConfidenceCount++;
     }
 
+    if (ocr.detectedBarcodes && ocr.detectedBarcodes.length > 0) {
+      for (const bc of ocr.detectedBarcodes) {
+        if (!seenBarcodes.has(bc.rawValue)) {
+          seenBarcodes.add(bc.rawValue);
+          allDetectedBarcodes.push(bc);
+        }
+      }
+    }
+
     const frameDeclarations = extractDeclarations(ocr.text, ocr.confidence || 75, {
       frameNumber: frame.frameNumber,
       timestamp: frame.timestamp,
       source: 'video_frame',
+      detectedBarcodes: allDetectedBarcodes,
     });
 
     frameResults.push({
@@ -60,6 +72,7 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
       ocrText: ocr.text,
       ocrConfidence: ocr.confidence,
       declarations: frameDeclarations,
+      detectedBarcodes: ocr.detectedBarcodes || [],
     });
 
     // Check if we already detected all 4 core mandatory items with high confidence
@@ -68,7 +81,6 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
     ).length;
 
     if (i >= 2 && detectedCore >= 3 && frameResults.length >= 3) {
-      // Early exit optimization if we have captured the critical packaging panels
       break;
     }
   }
@@ -81,6 +93,20 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
 
   // 2. Perform Multi-Frame Information Fusion
   const fusedDeclarations = fuseFrameDeclarations(frameResults);
+
+  // If we have GS1 barcodes with country, ensure Country of Origin is set if missing
+  if (allDetectedBarcodes.length > 0) {
+    const gs1 = allDetectedBarcodes.find(b => b.country);
+    if (gs1) {
+      const coo = fusedDeclarations.find(d => d.field === 'countryOfOrigin');
+      if (coo && coo.status === 'not_detected') {
+        coo.value = gs1.country;
+        coo.status = 'detected';
+        coo.confidence = 94;
+        coo.evidence = `Verified via GS1 Barcode ${gs1.rawValue} (${gs1.country})`;
+      }
+    }
+  }
 
   const avgOcrConfidence = validConfidenceCount > 0
     ? Math.round(totalConfidence / validConfidenceCount)
@@ -99,6 +125,7 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
     ocrConfidence: avgOcrConfidence,
     declarations: fusedDeclarations,
     compliance,
+    detectedBarcodes: allDetectedBarcodes,
     scanMetadata: {
       type: 'video',
       durationSeconds: 8,
@@ -114,7 +141,6 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
  * Combines declarations from all frames, aggregates consensus, flags conflicts, and attaches frame evidence.
  */
 export function fuseFrameDeclarations(frameResults) {
-  // Field templates
   const allFields = [
     'productName',
     'manufacturer',
@@ -154,7 +180,6 @@ export function fuseFrameDeclarations(frameResults) {
     }
 
     if (candidateEntries.length === 0) {
-      // Find template label & rule from first frame
       const sample = frameResults[0]?.declarations.find((d) => d.field === field);
       fused.push({
         field,
@@ -190,10 +215,8 @@ export function fuseFrameDeclarations(frameResults) {
     const groupKeys = Object.keys(valueGroups);
 
     if (groupKeys.length === 1) {
-      // Unanimous consensus across all detecting frames!
       const group = valueGroups[groupKeys[0]];
       const count = group.instances.length;
-      // Boost confidence if multiple frames confirm the same value
       const boostedConfidence = Math.min(99, group.maxConf + Math.min(15, (count - 1) * 5));
       const frameEvidenceList = group.instances.map((i) => ({
         frameNumber: i.frameNumber,
@@ -216,8 +239,6 @@ export function fuseFrameDeclarations(frameResults) {
         frameEvidence: frameEvidenceList,
       });
     } else {
-      // Conflicting values detected across different frames!
-      // Sort groups by instance count and max confidence
       const sortedGroups = Object.values(valueGroups).sort(
         (a, b) => b.instances.length - a.instances.length || b.maxConf - a.maxConf
       );
@@ -229,7 +250,7 @@ export function fuseFrameDeclarations(frameResults) {
         field,
         label: topGroup.label,
         value: topGroup.representativeValue,
-        confidence: 65, // Lowered due to conflict
+        confidence: 65,
         status: 'conflicting',
         rule: topGroup.rule,
         evidence: `Conflicting frames: ${conflictValues}`,
@@ -248,9 +269,6 @@ export function fuseFrameDeclarations(frameResults) {
   return fused;
 }
 
-/**
- * Pick the best representative frame (highest detected declarations + sharpness).
- */
 function selectBestRepresentativeFrame(frameResults) {
   if (!frameResults || frameResults.length === 0) return null;
 
