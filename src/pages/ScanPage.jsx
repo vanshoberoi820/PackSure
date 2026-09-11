@@ -79,9 +79,11 @@ export default function ScanPage() {
 
   // Video recording states
   const [recordingStream, setRecordingStream] = useState(null);
-  const [recordingProgress, setRecordingProgress] = useState({ elapsedMs: 0, remainingSec: 8, progressPct: 0 });
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingProgress, setRecordingProgress] = useState({ elapsedMs: 0, remainingSec: 15, progressPct: 0 });
   const [videoBlob, setVideoBlob] = useState(null);
   const [liveBarcodes, setLiveBarcodes] = useState([]);
+  const recorderControlRef = useRef(null);
 
   // Voice Assistant states
   const [keyDeclarations, setKeyDeclarations] = useState([]);
@@ -95,6 +97,9 @@ export default function ScanPage() {
   useEffect(() => {
     return () => {
       stopSpeech();
+      if (recorderControlRef.current) {
+        try { recorderControlRef.current.stop(); } catch (_) {}
+      }
       if (recordingStream) {
         stopMediaStream(recordingStream);
       }
@@ -167,8 +172,8 @@ export default function ScanPage() {
     }
   };
 
-  // Start 8-Second Video Recording Flow
-  const handleStartRecordingVideo = async () => {
+  // Step 1: Open Camera Viewfinder for 15-Second Video Flow
+  const handleOpenVideoCamera = async () => {
     setError(null);
     setLiveBarcodes([]);
     if (!isVideoRecordingSupported()) {
@@ -179,7 +184,8 @@ export default function ScanPage() {
     try {
       setScanType('video');
       setStep('recording_video');
-      setRecordingProgress({ elapsedMs: 0, remainingSec: 8, progressPct: 0 });
+      setIsRecording(false);
+      setRecordingProgress({ elapsedMs: 0, remainingSec: 15, progressPct: 0 });
 
       const stream = await getCameraStream();
       setRecordingStream(stream);
@@ -188,47 +194,71 @@ export default function ScanPage() {
         liveVideoRef.current.srcObject = stream;
         await liveVideoRef.current.play();
       }
+    } catch (err) {
+      console.error('Camera open failed:', err);
+      if (recordingStream) stopMediaStream(recordingStream);
+      setRecordingStream(null);
+      setError(err.message || 'Camera permission denied or unavailable.');
+      setStep('select');
+    }
+  };
 
-      // Start ~8s recording with progress ticks
-      const { videoBlob: recordedBlob } = await recordProductVideo(stream, {
-        durationMs: 8000,
+  // Step 2: Start 15-Second Recording with Live Progress
+  const handleStartRecording = async () => {
+    if (!recordingStream) return;
+    try {
+      setIsRecording(true);
+      setRecordingProgress({ elapsedMs: 0, remainingSec: 15, progressPct: 0 });
+
+      const recorder = recordProductVideo(recordingStream, {
+        durationMs: 15000,
         onProgress: (p) => {
           setRecordingProgress(p);
         },
       });
 
-      stopMediaStream(stream);
+      recorderControlRef.current = recorder;
+
+      const { videoBlob: recordedBlob } = await recorder.promise;
+
+      stopMediaStream(recordingStream);
       setRecordingStream(null);
+      setIsRecording(false);
       setVideoBlob(recordedBlob);
 
       // Transition straight to multi-frame analysis
       handleAnalyzeVideo(recordedBlob);
     } catch (err) {
-      console.error('Video recording failed:', err);
+      console.error('Recording error:', err);
+      setIsRecording(false);
       if (recordingStream) stopMediaStream(recordingStream);
       setRecordingStream(null);
-      setError(err.message || 'Camera recording was interrupted.');
+      setError(err.message || 'Video recording was interrupted.');
       setStep('select');
     }
   };
 
-  // Stop video recording early and proceed to analyze
+  // Step 3: Stop Recording Early and Proceed to Analysis
   const handleStopVideoEarly = () => {
-    if (recordingStream) {
-      stopMediaStream(recordingStream);
-      setRecordingStream(null);
+    if (recorderControlRef.current) {
+      recorderControlRef.current.stop();
     }
   };
 
   // Cancel video recording
   const handleCancelVideo = () => {
+    if (recorderControlRef.current) {
+      try { recorderControlRef.current.stop(); } catch (_) {}
+    }
     if (recordingStream) {
       stopMediaStream(recordingStream);
       setRecordingStream(null);
     }
+    setIsRecording(false);
     setStep('select');
     setError(null);
   };
+
 
   // Load demo product
   const handleUseDemo = () => {
@@ -273,7 +303,7 @@ export default function ScanPage() {
     setVoiceMuted(nextMuted);
   };
 
-  // Analyze 8-Second Video
+  // Analyze 15-Second Video
   const handleAnalyzeVideo = async (blob) => {
     setStep('analyzing');
     setError(null);
@@ -285,10 +315,10 @@ export default function ScanPage() {
     const voiceEnabled = getVoiceAssistantEnabled();
 
     try {
-      setAnalysisProgress({ step: 1, label: 'Extracting 4 key package angles…', progress: 15 });
+      setAnalysisProgress({ step: 1, label: 'Extracting 5 sharp package angles…', progress: 15 });
       setVoiceStatusText('Extracting sharp angle frames…');
 
-      const frames = await extractFramesFromVideo(blob, { targetFrameCount: 4, durationMs: 8000 });
+      const frames = await extractFramesFromVideo(blob, { targetFrameCount: 5, durationMs: 15000 });
       if (!frames || frames.length === 0) {
         throw new Error('No clear frames could be extracted from video.');
       }
@@ -351,7 +381,7 @@ export default function ScanPage() {
       runVoiceAssistantSequence({
         items,
         enabled: voiceEnabled && !isMuted,
-        introText: '8-second video captured. Fusing multi-frame packaging declarations.',
+        introText: '15-second video captured. Fusing multi-angle packaging declarations.',
         onItemStart: (idx, item) => {
           setActiveVoiceIndex(idx);
           if (idx >= 0) {
@@ -484,10 +514,11 @@ export default function ScanPage() {
         compliance,
         detectedBarcodes: finalBarcodes,
         scanMetadata: {
-          type: 'image',
-          durationSeconds: null,
-          framesAnalyzed: 1,
+          type: 'single_image',
+          quality: qualityAssess.quality,
+          sharpness: qualityAssess.sharpness,
         },
+        frameResults: [],
         officerReview: {
           notes: '',
           decisions: {},
@@ -508,7 +539,7 @@ export default function ScanPage() {
       runVoiceAssistantSequence({
         items,
         enabled: voiceEnabled && !isMuted,
-        introText: 'High resolution label captured. Verifying mandatory declarations.',
+        introText: 'Label scanned. AI Voice Assistant announcing key declarations.',
         onItemStart: (idx, item) => {
           setActiveVoiceIndex(idx);
           if (idx >= 0) {
@@ -563,7 +594,7 @@ export default function ScanPage() {
             {step === 'analyzing'
               ? 'Live Verification'
               : step === 'recording_video'
-              ? '8-Sec Video Scan'
+              ? (isRecording ? 'Recording 360° Video' : '360° Video Camera')
               : 'Scan Product'}
           </h1>
         </div>
@@ -598,24 +629,24 @@ export default function ScanPage() {
           </div>
 
           <div className="space-y-3.5">
-            {/* 8-Sec Video Scan (Featured) */}
+            {/* 15-Sec Video Scan (Featured) */}
             <button
-              onClick={handleStartRecordingVideo}
+              onClick={handleOpenVideoCamera}
               className="w-full p-4 bg-gradient-to-r from-primary-600 via-primary-700 to-indigo-700 text-white rounded-2xl shadow-lg hover:shadow-xl active:scale-[0.98] transition-all flex items-center justify-between text-left relative overflow-hidden group"
             >
               <div className="flex items-center gap-3.5 relative z-10">
                 <div className="w-12 h-12 rounded-xl bg-white/20 backdrop-blur-md flex items-center justify-center border border-white/20">
-                  <Video className="w-6 h-6 text-white animate-pulse" />
+                  <Video className="w-6 h-6 text-white" />
                 </div>
                 <div>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-sm font-bold text-white">Record 8-Sec 360° Video</span>
+                    <span className="text-sm font-bold text-white">Record 15-Sec 360° Video</span>
                     <span className="bg-amber-400 text-amber-950 font-extrabold text-[9px] px-2 py-0.5 rounded-full uppercase tracking-wider">
                       Recommended
                     </span>
                   </div>
                   <p className="text-[11px] text-primary-100 mt-0.5">
-                    Multi-frame OCR + Barcode detection across all angles
+                    Multi-frame OCR + Barcode detection with Start / Stop control
                   </p>
                 </div>
               </div>
@@ -666,34 +697,44 @@ export default function ScanPage() {
         </div>
       )}
 
-      {/* STEP 1.5: 8-Second Video Live Recording Viewfinder */}
+      {/* STEP 1.5: 15-Second Video Live Recording Viewfinder */}
       {step === 'recording_video' && (
         <div className="flex-1 flex flex-col justify-between p-4 bg-black text-white relative overflow-hidden">
           {/* Top Timer Bar */}
           <div className="relative z-10 bg-black/60 backdrop-blur-md rounded-2xl p-3 border border-white/20 flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <div className="w-3 h-3 rounded-full bg-rose-500 animate-ping" />
-              <span className="text-xs font-bold uppercase tracking-wider text-rose-400">
-                Recording 360° Label
+              <div
+                className={`w-3 h-3 rounded-full ${
+                  isRecording ? 'bg-rose-500 animate-ping' : 'bg-emerald-400'
+                }`}
+              />
+              <span
+                className={`text-xs font-bold uppercase tracking-wider ${
+                  isRecording ? 'text-rose-400' : 'text-emerald-300'
+                }`}
+              >
+                {isRecording ? 'Recording 360° Label' : 'Camera Ready'}
               </span>
             </div>
 
             <div className="flex items-center gap-2 font-mono font-bold text-sm bg-white/10 px-3 py-1 rounded-lg">
-              <span>00:0{recordingProgress.remainingSec}</span>
-              <span className="text-gray-400 text-xs">/ 00:08</span>
+              <span>00:{String(recordingProgress.remainingSec).padStart(2, '0')}</span>
+              <span className="text-gray-400 text-xs">/ 00:15</span>
             </div>
           </div>
 
-          {/* Progress Bar */}
-          <div className="w-full bg-white/20 h-1.5 rounded-full overflow-hidden my-2 relative z-10">
-            <div
-              className="bg-gradient-to-r from-emerald-400 to-primary-400 h-full transition-all duration-150"
-              style={{ width: `${recordingProgress.progressPct}%` }}
-            />
-          </div>
+          {/* Progress Bar (Visible when recording) */}
+          {isRecording && (
+            <div className="w-full bg-white/20 h-2 rounded-full overflow-hidden my-2 relative z-10">
+              <div
+                className="bg-gradient-to-r from-emerald-400 to-primary-400 h-full transition-all duration-150"
+                style={{ width: `${recordingProgress.progressPct}%` }}
+              />
+            </div>
+          )}
 
           {/* Live Camera Viewport */}
-          <div className="flex-1 relative rounded-2xl overflow-hidden bg-slate-900 flex items-center justify-center border border-white/10 shadow-inner">
+          <div className="flex-1 relative rounded-2xl overflow-hidden bg-slate-900 flex items-center justify-center border border-white/10 shadow-inner mt-2">
             <video
               ref={liveVideoRef}
               autoPlay
@@ -708,7 +749,7 @@ export default function ScanPage() {
                 Align Package Inside Frame
               </span>
               <span className="text-[10px] bg-black/60 text-emerald-300 px-2 py-0.5 rounded self-end">
-                Move Slowly Around Product
+                {isRecording ? 'Rotate Slowly 360°' : 'Ready to Start'}
               </span>
             </div>
 
@@ -744,10 +785,12 @@ export default function ScanPage() {
             )}
           </div>
 
-          {/* Bottom Guidance & Actions */}
+          {/* Bottom Guidance & Controls */}
           <div className="relative z-10 space-y-3 pt-3">
             <p className="text-xs text-center text-gray-300">
-              💡 Rotate package slowly to capture MRP, Dates, Weight/Pages & Barcode.
+              {isRecording
+                ? '🔄 Slowly rotate package to capture MRP, Use By, Net Qty & Barcode.'
+                : '📸 Hold steady and click Start Recording when ready.'}
             </p>
 
             <div className="grid grid-cols-2 gap-3">
@@ -757,13 +800,24 @@ export default function ScanPage() {
               >
                 Cancel
               </button>
-              <button
-                onClick={handleStopVideoEarly}
-                className="py-3 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-lg transition-all"
-              >
-                <Square className="w-4 h-4 fill-white" />
-                Done (Analyze Now)
-              </button>
+
+              {!isRecording ? (
+                <button
+                  onClick={handleStartRecording}
+                  className="py-3.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/40 active:scale-[0.98] transition-all"
+                >
+                  <div className="w-3 h-3 rounded-full bg-white animate-ping" />
+                  Start 15s Recording
+                </button>
+              ) : (
+                <button
+                  onClick={handleStopVideoEarly}
+                  className="py-3.5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-900/40 active:scale-[0.98] transition-all"
+                >
+                  <Square className="w-4 h-4 fill-white" />
+                  Stop & Analyze Now
+                </button>
+              )}
             </div>
           </div>
         </div>

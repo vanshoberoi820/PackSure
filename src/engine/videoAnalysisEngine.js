@@ -24,7 +24,7 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
   const allDetectedBarcodes = [];
   const seenBarcodes = new Set();
 
-  const panelNames = ['Front Label', 'Side Panel', 'Back Information', 'Top / Crimps'];
+  const panelNames = ['Front Panel', 'Angle 2', 'Back Panel', 'Angle 4', 'Angle 5', 'Angle 6'];
 
   // 1. Run sequential OCR across extracted key frames
   for (let i = 0; i < frames.length; i++) {
@@ -74,15 +74,6 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
       declarations: frameDeclarations,
       detectedBarcodes: ocr.detectedBarcodes || [],
     });
-
-    // Check if we already detected all 4 core mandatory items with high confidence
-    const detectedCore = frameDeclarations.filter(
-      (d) => ['mrp', 'netQuantity', 'manufacturingDate', 'manufacturer'].includes(d.field) && d.status === 'detected'
-    ).length;
-
-    if (i >= 2 && detectedCore >= 3 && frameResults.length >= 3) {
-      break;
-    }
   }
 
   onProgress({
@@ -128,7 +119,7 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
     detectedBarcodes: allDetectedBarcodes,
     scanMetadata: {
       type: 'video',
-      durationSeconds: 8,
+      durationSeconds: 15,
       framesAnalyzed: frameResults.length,
       bestFrameNumber: bestFrame?.frameNumber || 1,
     },

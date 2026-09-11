@@ -327,10 +327,14 @@ export function extractMRP(text, confMul, metadata = {}) {
   const normalizedPriceText = normalizePriceString(text);
 
   const patterns = [
-    /MRP[\s\S]{0,60}?(?:Rs\.?|₹|INR)?\s*[:\-.]?\s*(?:\(?[^0-9\n]{0,30}\)?\s*)?([0-9]+(?:\.[0-9]{1,2})?)/i,
-    /(?:maximum\s*retail\s*price|max\.?\s*retail\s*price)[\s\S]{0,60}?(?:Rs\.?|₹|INR)?\s*[:\-.]?\s*([0-9]+(?:\.[0-9]{1,2})?)/i,
-    /(?:Rs\.?|₹)\s*([0-9]+(?:\.[0-9]{1,2})?)\s*(?:\/\-|only|\(incl|incl|\n|$)/i,
-    /M\.?\s*R\.?\s*P\.?[\s\S]{0,40}?(?:Rs\.?|₹)?\s*([0-9]+(?:\.[0-9]{1,2})?)/i,
+    // 1. MRP with price right after or separated by Rs/₹/taxes/colons: "MRP Rs. 182.00", "MRP: 185/-", "MRP (INCL. OF ALL TAXES) Rs. 182.00"
+    /MRP[\s\S]{0,80}?(?:Rs\.?|₹|INR)?\s*[:\-.]?\s*(?:\(?[^0-9\n]{0,40}\)?\s*)?([0-9]+(?:\.[0-9]{1,2})?)(?:\s*(?:\/\-|\/\s*N|\/\s*unit|only|\(incl))?/i,
+    // 2. Maximum Retail Price wording
+    /(?:maximum\s*retail\s*price|max\.?\s*retail\s*price)[\s\S]{0,80}?(?:Rs\.?|₹|INR)?\s*[:\-.]?\s*([0-9]+(?:\.[0-9]{1,2})?)/i,
+    // 3. Standalone Rs. / ₹ with trailing taxes or only
+    /(?:Rs\.?|₹)\s*[:\-]?\s*([0-9]+(?:\.[0-9]{1,2})?)\s*(?:\/\-|only|\(incl|incl|\n|$)/i,
+    // 4. Price followed by (incl of all taxes)
+    /([0-9]+(?:\.[0-9]{1,2})?)\s*(?:\/\-)?\s*(?:\(?(?:incl\.?|inclusive)\s*(?:of\s*)?all\s*taxes\)?)/i,
   ];
 
   for (const pat of patterns) {
@@ -359,16 +363,20 @@ export function extractManufacturingDate(text, confMul, metadata = {}) {
   const label = 'Manufacturing / Packing Date';
   const rule = 'Rule 6(1)(d)';
 
+  const normalized = normalizeDateDigits(text);
+
   const patterns = [
-    /(?:mfg\.?\s*(?:d(?:ate|t)?)?|mfd\.?\s*(?:d(?:ate|t)?)?|pkg\.?\s*(?:d(?:ate|t)?)?|pack(?:ed|ing)\s*(?:date|on)?|date\s*of\s*(?:mfg|manufacture|packing))[\s\S]{0,35}?[:\-.]?\s*([0-9OIlSBzZ]{1,2}\s*[\/\-\.]\s*[0-9OIlSBzZ]{1,2}\s*[\/\-\.]\s*[0-9OIlSBzZ]{2,4}|[A-Za-z]{3,9}\s*[,']?\s*[0-9OIlSBzZ]{2,4}|[0-9OIlSBzZ]{1,2}\s*[\/\-\.]\s*[0-9OIlSBzZ]{2,4})/i,
+    // 1. Full date with day, month name/number, and year: "28/04/2026", "28 APR 2026", "28/APR/2026", "28-04-26"
+    /(?:mfg\.?\s*(?:d(?:ate|t)?)?|mfd\.?\s*(?:d(?:ate|t)?)?|pkg\.?\s*(?:d(?:ate|t)?)?|pack(?:ed|ing)\s*(?:date|on)?|date\s*of\s*(?:mfg|manufacture|packing)|mfd|mfg)[\s\S]{0,35}?[:\-.]?\s*([0-9]{1,2}\s*[\/\-\.]\s*(?:[0-9]{1,2}|[A-Za-z]{3,9})\s*[\/\-\.]\s*[0-9]{2,4}|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{2,4})/i,
+    // 2. Month + Year: "04/2026", "APR 2026", "04/26"
+    /(?:mfg\.?\s*(?:d(?:ate|t)?)?|mfd\.?\s*(?:d(?:ate|t)?)?|pkg\.?\s*(?:d(?:ate|t)?)?|pack(?:ed|ing)\s*(?:date|on)?|date\s*of\s*(?:mfg|manufacture|packing)|mfd|mfg)[\s\S]{0,35}?[:\-.]?\s*([A-Za-z]{3,9}\s*[,']?\s*[0-9]{2,4}|[0-9]{1,2}\s*[\/\-\.]\s*[0-9]{2,4})/i,
   ];
 
   for (const pat of patterns) {
-    const m = text.match(pat);
+    const m = normalized.match(pat);
     if (m) {
-      const rawDate = m[1].replace(/\s+/g, '');
-      const cleaned = normalizeDateDigits(rawDate);
-      return makeDeclaration(field, label, cleaned, 90 * confMul, 'detected', rule, m[0], metadata);
+      const rawDate = m[1].trim();
+      return makeDeclaration(field, label, rawDate, 92 * confMul, 'detected', rule, m[0], metadata);
     }
   }
 
@@ -383,16 +391,22 @@ export function extractBestBefore(text, confMul, metadata = {}) {
   const label = 'Best Before / Expiry Date';
   const rule = 'Rule 6(1)(d) proviso';
 
+  const normalized = normalizeDateDigits(text);
+
   const patterns = [
-    /(?:best\s*before|best\s*by|exp(?:iry)?\s*(?:date)?|use\s*by|use\s*before|bb)[\s\S]{0,35}?[:\-.]?\s*([0-9OIlSBzZ]{1,2}\s*[\/\-\.]\s*[0-9OIlSBzZ]{1,2}\s*[\/\-\.]\s*[0-9OIlSBzZ]{2,4}|\d+\s*months?(?:\s*from\s*(?:mfg|manufacture|packing|packaging))?|[A-Za-z]{3,9}\s*[,']?\s*[0-9OIlSBzZ]{2,4}|[0-9OIlSBzZ]{1,2}\s*[\/\-\.]\s*[0-9OIlSBzZ]{2,4})/i,
+    // 1. Full date with day, month name/number, and year: "23/01/2027", "23 JAN 2027", "23/JAN/2027", "23-01-27"
+    /(?:best\s*before|best\s*by|exp(?:iry)?|use\s*by|bb)[\s\S]{0,35}?[:\-.]?\s*([0-9]{1,2}\s*[\/\-\.]\s*(?:[0-9]{1,2}|[A-Za-z]{3,9})\s*[\/\-\.]\s*[0-9]{2,4}|[0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{2,4})/i,
+    // 2. Month + Year: "JAN 2027", "01/2027", "01/27"
+    /(?:best\s*before|best\s*by|exp(?:iry)?|use\s*by|bb)[\s\S]{0,35}?[:\-.]?\s*([A-Za-z]{3,9}\s*[,']?\s*[0-9]{2,4}|[0-9]{1,2}\s*[\/\-\.]\s*[0-9]{2,4})/i,
+    // 3. Duration: "9 months from manufacture", "6 months from packaging", "180 days"
+    /(?:best\s*before|best\s*by|shelf\s*life)[\s\S]{0,35}?[:\-.]?\s*(\d+\s*(?:months?|days?|years?)(?:\s*from\s*(?:mfg|manufacture|packing|packaging|pkd|mfd))?)/i,
   ];
 
   for (const pat of patterns) {
-    const m = text.match(pat);
+    const m = normalized.match(pat);
     if (m) {
-      const rawDate = m[1].trim();
-      const cleaned = /month/i.test(rawDate) ? rawDate : normalizeDateDigits(rawDate);
-      return makeDeclaration(field, label, cleaned, 88 * confMul, 'detected', rule, m[0], metadata);
+      let rawDate = m[1].trim();
+      return makeDeclaration(field, label, rawDate, 90 * confMul, 'detected', rule, m[0], metadata);
     }
   }
 

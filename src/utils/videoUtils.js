@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────
-   Video Utilities — 8-Second Product Video Recording & Frame Extraction
+   Video Utilities — 15-Second Product Video Recording & Sharp Multi-Angle Frame Extraction
    ───────────────────────────────────────────── */
 import { calculateImageSharpness, resizeImage } from './imageUtils';
 
@@ -17,7 +17,7 @@ export function isVideoRecordingSupported() {
 }
 
 /**
- * Request rear/environment camera video stream.
+ * Request high-resolution rear/environment camera video stream.
  */
 export async function getCameraStream() {
   if (!isVideoRecordingSupported()) {
@@ -28,15 +28,27 @@ export async function getCameraStream() {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: 'environment' },
-        width: { ideal: 1280, max: 1920 },
-        height: { ideal: 720, max: 1080 },
+        width: { ideal: 1920, min: 1280 },
+        height: { ideal: 1080, min: 720 },
+        frameRate: { ideal: 30, max: 60 },
       },
       audio: false,
     });
     return stream;
   } catch (err) {
-    console.error('Camera access error:', err);
-    throw new Error('Camera permission denied or camera unavailable.');
+    console.error('Camera access error with HD constraints, trying basic constraints:', err);
+    try {
+      const fallbackStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+        },
+        audio: false,
+      });
+      return fallbackStream;
+    } catch (fallbackErr) {
+      console.error('Camera access error:', fallbackErr);
+      throw new Error('Camera permission denied or camera unavailable.');
+    }
   }
 }
 
@@ -69,13 +81,15 @@ function getSupportedMimeType() {
 }
 
 /**
- * Record an 8-second video from an active camera stream with live progress and cancel handlers.
+ * Record a 15-second product video from an active camera stream with live progress and early-stop capability.
  * @param {MediaStream} stream
- * @param {Object} options — { durationMs: 8000, onProgress: ({ elapsedMs, remainingSec, progressPct }) }
- * @returns {Promise<{ videoBlob: Blob, videoUrl: string, durationMs: number }>}
+ * @param {Object} options — { durationMs: 15000, onProgress: ({ elapsedMs, remainingSec, progressPct }) }
+ * @returns {{ promise: Promise<{ videoBlob: Blob, videoUrl: string, durationMs: number }>, stop: Function }}
  */
-export function recordProductVideo(stream, { durationMs = 8000, onProgress = () => {} } = {}) {
-  return new Promise((resolve, reject) => {
+export function recordProductVideo(stream, { durationMs = 15000, onProgress = () => {} } = {}) {
+  let stopRecordingFn = null;
+
+  const promise = new Promise((resolve, reject) => {
     const mimeType = getSupportedMimeType();
     const options = mimeType ? { mimeType } : undefined;
 
@@ -94,12 +108,22 @@ export function recordProductVideo(stream, { durationMs = 8000, onProgress = () 
     const finish = () => {
       if (isFinished) return;
       isFinished = true;
-      clearInterval(intervalId);
+      if (intervalId) clearInterval(intervalId);
       const actualDuration = Date.now() - startTime;
       const blobType = mimeType || 'video/webm';
       const videoBlob = new Blob(chunks, { type: blobType });
       const videoUrl = URL.createObjectURL(videoBlob);
       resolve({ videoBlob, videoUrl, durationMs: actualDuration });
+    };
+
+    stopRecordingFn = () => {
+      if (isFinished) return;
+      if (intervalId) clearInterval(intervalId);
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+      } else {
+        finish();
+      }
     };
 
     mediaRecorder.ondataavailable = (e) => {
@@ -113,7 +137,7 @@ export function recordProductVideo(stream, { durationMs = 8000, onProgress = () 
     };
 
     mediaRecorder.onerror = (err) => {
-      clearInterval(intervalId);
+      if (intervalId) clearInterval(intervalId);
       reject(err);
     };
 
@@ -128,15 +152,17 @@ export function recordProductVideo(stream, { durationMs = 8000, onProgress = () 
       onProgress({ elapsedMs: elapsed, remainingSec, progressPct });
 
       if (elapsed >= durationMs) {
-        clearInterval(intervalId);
-        if (mediaRecorder.state === 'recording') {
-          mediaRecorder.stop();
-        } else {
-          finish();
-        }
+        stopRecordingFn();
       }
     }, 100);
   });
+
+  return {
+    promise,
+    stop: () => {
+      if (stopRecordingFn) stopRecordingFn();
+    },
+  };
 }
 
 /**
@@ -152,15 +178,16 @@ export function formatTimestamp(ms) {
 
 /**
  * Extract representative, high-sharpness key frames from a video Blob.
- * Uses 4 strategically spaced key frames covering 360° rotation (Front, Right, Back, Left).
- * Downscales for optimal OCR speed (max 960x540).
+ * Uses 5 strategically spaced key frames covering 360° rotation.
+ * Samples micro candidate frames per interval and picks highest sharpness to prevent blur.
+ * Uses 1280x720 canvas for high OCR readability without excessive memory overhead.
  * @param {Blob|string} videoSource — video Blob or URL
- * @param {number|Object} targetConfig — frame count or options object { targetFrameCount: 4, durationMs: 8000 }
+ * @param {number|Object} targetConfig — frame count or options object { targetFrameCount: 5, durationMs: 15000 }
  * @returns {Promise<Array<{ frameNumber: number, timestamp: string, timeSec: number, dataUrl: string, sharpness: number }>>}
  */
-export async function extractFramesFromVideo(videoSource, targetConfig = 4) {
-  const targetFrameCount = typeof targetConfig === 'number' ? targetConfig : (targetConfig?.targetFrameCount || 4);
-  const fallbackDurationMs = typeof targetConfig === 'object' && targetConfig?.durationMs ? targetConfig.durationMs : 8000;
+export async function extractFramesFromVideo(videoSource, targetConfig = 5) {
+  const targetFrameCount = typeof targetConfig === 'number' ? targetConfig : (targetConfig?.targetFrameCount || 5);
+  const fallbackDurationMs = typeof targetConfig === 'object' && targetConfig?.durationMs ? targetConfig.durationMs : 15000;
 
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
@@ -178,12 +205,12 @@ export async function extractFramesFromVideo(videoSource, targetConfig = 4) {
         duration = fallbackDurationMs / 1000;
       }
 
-      // Downscale to 960x540 max for 3-4x faster OCR inference
-      let canvasW = video.videoWidth || 960;
-      let canvasH = video.videoHeight || 540;
-      if (canvasW > 960) {
-        const ratio = 960 / canvasW;
-        canvasW = 960;
+      // Crisp HD resolution (1280 max width) for sharp text detection without blur
+      let canvasW = video.videoWidth || 1280;
+      let canvasH = video.videoHeight || 720;
+      if (canvasW > 1280) {
+        const ratio = 1280 / canvasW;
+        canvasW = 1280;
         canvasH = Math.round(canvasH * ratio);
       }
 
@@ -192,19 +219,18 @@ export async function extractFramesFromVideo(videoSource, targetConfig = 4) {
       canvas.height = canvasH;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-      // Generate sampling timestamps across 8 seconds
-      // For 4 frames across 8s: ~1.0s (Front), ~3.0s (Side A), ~5.0s (Back), ~7.0s (Side B)
-      const sampleTimes = [];
-      const startSec = 0.8;
-      const endSec = Math.max(startSec + 1, duration - 0.6);
+      // Generate base sampling timestamps across recorded duration
+      const sampleWindows = [];
+      const startSec = Math.min(1.0, duration * 0.08);
+      const endSec = Math.max(startSec + 1, duration - 0.5);
       const step = (endSec - startSec) / Math.max(1, targetFrameCount - 1);
 
       for (let i = 0; i < targetFrameCount; i++) {
         const t = Math.min(endSec, startSec + i * step);
-        sampleTimes.push(parseFloat(t.toFixed(2)));
+        sampleWindows.push(parseFloat(t.toFixed(2)));
       }
 
-      const extractedCandidates = [];
+      const extractedFinalFrames = [];
 
       const captureFrameAt = (time) => {
         return new Promise((res) => {
@@ -217,7 +243,7 @@ export async function extractFramesFromVideo(videoSource, targetConfig = 4) {
             try {
               ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
               const sharpness = calculateImageSharpness(canvas);
-              const dataUrl = canvas.toDataURL('image/jpeg', 0.90);
+              const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
               res({
                 timeSec: time,
                 timestamp: formatTimestamp(time * 1000),
@@ -228,7 +254,7 @@ export async function extractFramesFromVideo(videoSource, targetConfig = 4) {
               res({
                 timeSec: time,
                 timestamp: formatTimestamp(time * 1000),
-                dataUrl: canvas.toDataURL('image/jpeg', 0.8),
+                dataUrl: canvas.toDataURL('image/jpeg', 0.85),
                 sharpness: 50,
               });
             }
@@ -239,11 +265,11 @@ export async function extractFramesFromVideo(videoSource, targetConfig = 4) {
             if (!hasSeeked) {
               onSeeked();
             }
-          }, 1200);
+          }, 1000);
 
           video.addEventListener('seeked', onSeeked, { once: true });
           try {
-            video.currentTime = Math.max(0, Math.min(time, duration - 0.1));
+            video.currentTime = Math.max(0, Math.min(time, duration - 0.05));
           } catch (e) {
             onSeeked();
           }
@@ -251,20 +277,32 @@ export async function extractFramesFromVideo(videoSource, targetConfig = 4) {
       };
 
       try {
-        for (let i = 0; i < sampleTimes.length; i++) {
-          const frame = await captureFrameAt(sampleTimes[i]);
-          extractedCandidates.push(frame);
+        for (let i = 0; i < sampleWindows.length; i++) {
+          const centerTime = sampleWindows[i];
+          // Sample 3 micro candidates: center - 0.2s, center, center + 0.2s
+          const microCandidates = [];
+          const offsets = [-0.2, 0, 0.2];
+          
+          for (const off of offsets) {
+            const candidateTime = Math.max(0.2, Math.min(duration - 0.1, centerTime + off));
+            const frame = await captureFrameAt(candidateTime);
+            microCandidates.push(frame);
+          }
+
+          // Pick the candidate frame with highest sharpness to eliminate motion blur
+          microCandidates.sort((a, b) => b.sharpness - a.sharpness);
+          const sharpestFrame = microCandidates[0];
+
+          extractedFinalFrames.push({
+            frameNumber: i + 1,
+            timestamp: sharpestFrame.timestamp,
+            timeSec: sharpestFrame.timeSec,
+            dataUrl: sharpestFrame.dataUrl,
+            sharpness: sharpestFrame.sharpness,
+          });
         }
 
-        const finalFrames = extractedCandidates.map((f, idx) => ({
-          frameNumber: idx + 1,
-          timestamp: f.timestamp,
-          timeSec: f.timeSec,
-          dataUrl: f.dataUrl,
-          sharpness: f.sharpness,
-        }));
-
-        resolve(finalFrames);
+        resolve(extractedFinalFrames);
       } catch (err) {
         console.error('Frame extraction failed:', err);
         reject(err);
@@ -280,4 +318,3 @@ export async function extractFramesFromVideo(videoSource, targetConfig = 4) {
     };
   });
 }
-
