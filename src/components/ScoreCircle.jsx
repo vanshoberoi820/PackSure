@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-export default function ScoreCircle({ score = 0, size = 140, status = 'needs_review' }) {
+export default function ScoreCircle({ score = 0, size = 140, status = null }) {
   const [animatedScore, setAnimatedScore] = useState(0);
 
   useEffect(() => {
@@ -30,7 +30,11 @@ export default function ScoreCircle({ score = 0, size = 140, status = 'needs_rev
     violation: { stroke: '#ef4444', bg: '#fef2f2', text: '#991b1b' },
   };
 
-  const colors = colorMap[status] || colorMap.needs_review;
+  // >80 -> green (compliant), 55-80 -> yellow (needs_review), <55 -> red (violation)
+  const computedStatus = score > 80 ? 'compliant' : score >= 55 ? 'needs_review' : 'violation';
+  const effectiveStatus = status || computedStatus;
+
+  const colors = colorMap[effectiveStatus] || colorMap.needs_review;
 
   const statusLabel = {
     compliant: 'Compliant',

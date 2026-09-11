@@ -14,6 +14,7 @@ import {
   Square,
   ArrowRight,
   Tag,
+  Calendar,
   CalendarClock,
   Scale,
   Building2,
@@ -36,6 +37,7 @@ import {
   saveInspection,
   generateInspectionId,
   getVoiceAssistantEnabled,
+  setVoiceAssistantEnabled,
 } from '../utils/storage';
 import { imageToBase64, resizeImage } from '../utils/imageUtils';
 import {
@@ -58,7 +60,10 @@ function getIconForField(fieldId) {
   switch (fieldId) {
     case 'mrp':
       return Tag;
+    case 'mfgDate':
+      return Calendar;
     case 'useBy':
+    case 'bestBefore':
       return CalendarClock;
     case 'netWeight':
       return Scale;
@@ -95,6 +100,8 @@ export default function ScanPage() {
   const recorderControlRef = useRef(null);
 
   // Voice Assistant states
+  const [voiceAssistantPref, setVoiceAssistantPref] = useState(() => getVoiceAssistantEnabled());
+  const skipVoiceRequestedRef = useRef(false);
   const [keyDeclarations, setKeyDeclarations] = useState([]);
   const [activeVoiceIndex, setActiveVoiceIndex] = useState(-1);
   const [completedIndices, setCompletedIndices] = useState([]);
@@ -348,12 +355,29 @@ export default function ScanPage() {
     setLiveBarcodes([]);
   };
 
-  // Stop Voice & Go Directly to Report
-  const handleStopAndProceed = () => {
+  // Exit Voice Assistant & Go Directly to Report Immediately
+  const handleExitVoiceAndGoToReport = (targetInspectionId) => {
     stopSpeech();
-    if (currentInspectionId) {
-      navigate(`/result/${currentInspectionId}`);
+    setActiveVoiceIndex(99);
+    setVoiceStatusText('Loading full compliance report…');
+    const targetId = targetInspectionId || currentInspectionId;
+    if (targetId) {
+      navigate(`/result/${targetId}`);
+    } else {
+      // Analysis is still finishing OCR, flag it to skip narration as soon as analysis resolves
+      skipVoiceRequestedRef.current = true;
     }
+  };
+
+  // Legacy alias
+  const handleStopAndProceed = () => handleExitVoiceAndGoToReport();
+
+  // Toggle Voice Assistant Preference (Global / Sticky)
+  const handleToggleVoicePref = (e) => {
+    if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+    const nextVal = !voiceAssistantPref;
+    setVoiceAssistantPref(nextVal);
+    setVoiceAssistantEnabled(nextVal);
   };
 
   // Toggle Mute
@@ -369,10 +393,11 @@ export default function ScanPage() {
     setError(null);
     setActiveVoiceIndex(-1);
     setCompletedIndices([]);
+    skipVoiceRequestedRef.current = false;
 
     const inspectionId = generateInspectionId();
     setCurrentInspectionId(inspectionId);
-    const voiceEnabled = getVoiceAssistantEnabled();
+    const voiceEnabled = voiceAssistantPref && getVoiceAssistantEnabled();
 
     try {
       setAnalysisProgress({ step: 1, label: 'Extracting 5 sharp package angles…', progress: 15 });
@@ -470,6 +495,11 @@ export default function ScanPage() {
 
       saveInspection(newInspection);
 
+      if (skipVoiceRequestedRef.current || !voiceAssistantPref) {
+        navigate(`/result/${inspectionId}`);
+        return;
+      }
+
       const items = buildKeyDeclarationsData(
         declarations,
         compliance,
@@ -516,10 +546,11 @@ export default function ScanPage() {
     setError(null);
     setActiveVoiceIndex(-1);
     setCompletedIndices([]);
+    skipVoiceRequestedRef.current = false;
 
     const inspectionId = generateInspectionId();
     setCurrentInspectionId(inspectionId);
-    const voiceEnabled = getVoiceAssistantEnabled();
+    const voiceEnabled = voiceAssistantPref && getVoiceAssistantEnabled();
 
     if (isDemo) {
       setAnalysisProgress({ step: 1, label: 'Reading demo label…', progress: 100 });
@@ -528,6 +559,11 @@ export default function ScanPage() {
       const demoInspection = getDemoInspection(inspectionId);
       demoInspection.detectedBarcodes = liveBarcodes;
       saveInspection(demoInspection);
+
+      if (skipVoiceRequestedRef.current || !voiceAssistantPref) {
+        navigate(`/result/${inspectionId}`);
+        return;
+      }
 
       const items = buildKeyDeclarationsData(
         demoInspection.declarations,
@@ -691,6 +727,11 @@ export default function ScanPage() {
 
       saveInspection(newInspection);
 
+      if (skipVoiceRequestedRef.current || !voiceAssistantPref) {
+        navigate(`/result/${inspectionId}`);
+        return;
+      }
+
       const items = buildKeyDeclarationsData(declarations, compliance, compliance.dateAssessment);
       setKeyDeclarations(items);
       setAnalysisProgress({ step: 4, label: 'Voice Assistant Active', progress: 100 });
@@ -785,18 +826,20 @@ export default function ScanPage() {
           </div>
 
           {step === 'analyzing' && (
-            <button
-              onClick={handleToggleMute}
-              className={`p-2 rounded-xl border flex items-center gap-1.5 text-xs font-semibold transition-all ${
-                isMuted
-                  ? 'bg-rose-50 border-rose-200 text-rose-600'
-                  : 'bg-primary-50 border-primary-200 text-primary-700 shadow-xs'
-              }`}
-              title={isMuted ? 'Unmute Voice Assistant' : 'Mute Voice Assistant'}
-            >
-              {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-              <span>{isMuted ? 'Muted' : 'Voice ON'}</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleToggleMute}
+                className={`p-2 rounded-xl border flex items-center gap-1.5 text-xs font-semibold transition-all ${
+                  isMuted
+                    ? 'bg-rose-50 border-rose-200 text-rose-600'
+                    : 'bg-primary-50 border-primary-200 text-primary-700 shadow-xs'
+                }`}
+                title={isMuted ? 'Unmute Voice Assistant' : 'Mute Voice Assistant'}
+              >
+                {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                <span>{isMuted ? 'Muted' : 'Voice ON'}</span>
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -1165,6 +1208,41 @@ export default function ScanPage() {
             </div>
           )}
 
+          {/* Voice Assistant Preference Toggle in Preview Setup */}
+          <div
+            onClick={handleToggleVoicePref}
+            className="p-3 bg-white rounded-xl border border-gray-200 shadow-2xs flex items-center justify-between cursor-pointer hover:bg-gray-50/80 transition-all select-none"
+          >
+            <div className="flex items-center gap-2.5">
+              <div
+                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                  voiceAssistantPref ? 'bg-primary-50 text-primary-600' : 'bg-gray-100 text-gray-400'
+                }`}
+              >
+                <Bot className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-gray-900 leading-tight">AI Voice Assistant Narration</p>
+                <p className="text-[10px] text-gray-500">
+                  {voiceAssistantPref
+                    ? 'Spoken summary of key declarations after scan'
+                    : 'Disabled • Opens report immediately after scan'}
+                </p>
+              </div>
+            </div>
+            <div
+              className={`w-10 h-5.5 rounded-full relative transition-colors ${
+                voiceAssistantPref ? 'bg-primary-600' : 'bg-gray-200'
+              }`}
+            >
+              <div
+                className={`absolute top-0.5 bg-white w-4.5 h-4.5 rounded-full shadow-xs transition-all ${
+                  voiceAssistantPref ? 'right-0.5' : 'left-0.5'
+                }`}
+              />
+            </div>
+          </div>
+
           <div className="pt-2 grid grid-cols-2 gap-3.5">
             <button
               onClick={handleRetake}
@@ -1193,7 +1271,7 @@ export default function ScanPage() {
 
             <div className="flex items-center justify-between relative z-10 mb-2">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-white/15 backdrop-blur-md flex items-center justify-center border border-white/20">
+                <div className="w-9 h-9 rounded-xl bg-white/15 backdrop-blur-md flex items-center justify-center border border-white/20 shrink-0">
                   <Bot className="w-5 h-5 text-white animate-pulse" />
                 </div>
                 <div>
@@ -1210,14 +1288,16 @@ export default function ScanPage() {
                 </div>
               </div>
 
-              {!isMuted && activeVoiceIndex >= 0 && activeVoiceIndex < 4 && (
-                <div className="flex items-end gap-1 h-5 px-2 py-1 bg-white/15 rounded-lg border border-white/20">
-                  <span className="w-1 bg-emerald-400 rounded-full animate-[bounce_0.8s_infinite_100ms] h-3" />
-                  <span className="w-1 bg-emerald-300 rounded-full animate-[bounce_0.8s_infinite_300ms] h-4" />
-                  <span className="w-1 bg-white rounded-full animate-[bounce_0.8s_infinite_200ms] h-2" />
-                  <span className="w-1 bg-emerald-400 rounded-full animate-[bounce_0.8s_infinite_400ms] h-5" />
-                </div>
-              )}
+              <div className="flex items-center gap-2">
+                {!isMuted && activeVoiceIndex >= 0 && activeVoiceIndex < keyDeclarations.length && (
+                  <div className="flex items-end gap-1 h-5 px-2 py-1 bg-white/15 rounded-lg border border-white/20">
+                    <span className="w-1 bg-emerald-400 rounded-full animate-[bounce_0.8s_infinite_100ms] h-3" />
+                    <span className="w-1 bg-emerald-300 rounded-full animate-[bounce_0.8s_infinite_300ms] h-4" />
+                    <span className="w-1 bg-white rounded-full animate-[bounce_0.8s_infinite_200ms] h-2" />
+                    <span className="w-1 bg-emerald-400 rounded-full animate-[bounce_0.8s_infinite_400ms] h-5" />
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="mt-3 bg-black/20 rounded-xl px-3 py-2 border border-white/10 flex items-center justify-between">
@@ -1226,10 +1306,10 @@ export default function ScanPage() {
                 {voiceStatusText}
               </span>
               <span className="text-[10px] text-primary-200 font-mono font-semibold ml-2 shrink-0">
-                {activeVoiceIndex >= 0 && activeVoiceIndex < 4
-                  ? `${activeVoiceIndex + 1} / 4`
+                {activeVoiceIndex >= 0 && activeVoiceIndex < keyDeclarations.length
+                  ? `${activeVoiceIndex + 1} / ${keyDeclarations.length}`
                   : activeVoiceIndex === 99
-                  ? '4 / 4'
+                  ? `${keyDeclarations.length} / ${keyDeclarations.length}`
                   : 'Processing'}
               </span>
             </div>
@@ -1322,19 +1402,31 @@ export default function ScanPage() {
 
           <div className="pt-2 space-y-2.5">
             <button
-              onClick={handleStopAndProceed}
-              className="w-full py-3.5 bg-gray-900 hover:bg-black text-white font-bold rounded-xl shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 text-sm"
+              onClick={() => handleExitVoiceAndGoToReport()}
+              className="w-full py-3.5 bg-white hover:bg-gray-50 text-gray-900 font-bold rounded-2xl shadow-sm border border-gray-200 active:scale-[0.98] transition-all flex items-center justify-center gap-2 text-sm cursor-pointer"
             >
-              <Square className="w-4 h-4 fill-white text-white" />
-              <span>Stop Voice & View Report</span>
-              <ArrowRight className="w-4 h-4 ml-1 text-gray-400" />
+              <span>Skip Voice</span>
             </button>
 
             <div className="flex items-center justify-between text-xs text-gray-500 px-1">
-              <span>Legal Metrology (Packaged Commodities) Rules, 2011</span>
+              <button
+                type="button"
+                onClick={handleToggleVoicePref}
+                className="flex items-center gap-1.5 text-gray-600 hover:text-gray-900 transition-colors text-left cursor-pointer"
+              >
+                <span
+                  className={`w-4 h-4 rounded border flex items-center justify-center text-[10px] ${
+                    !voiceAssistantPref ? 'bg-primary-600 border-primary-600 text-white' : 'border-gray-300 bg-white'
+                  }`}
+                >
+                  {!voiceAssistantPref && <Check className="w-3 h-3 stroke-[3]" />}
+                </span>
+                <span className="text-[11px] font-medium">Turn off voice assistant for future scans</span>
+              </button>
+
               <button
                 onClick={handleRetake}
-                className="text-gray-500 hover:text-rose-600 font-semibold underline"
+                className="text-gray-400 hover:text-rose-600 font-medium text-[11px] cursor-pointer"
               >
                 Cancel Scan
               </button>

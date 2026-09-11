@@ -99,7 +99,7 @@ export default function ReportsPage() {
               <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-50">
                 <div className="flex items-center text-sm font-semibold text-slate-700">
                   <span className="text-slate-500 mr-2">Score:</span>
-                  <span className={report.compliance?.overallScore >= 80 ? 'text-green-600' : 'text-amber-600'}>
+                  <span className={report.compliance?.overallScore > 80 ? 'text-green-600' : report.compliance?.overallScore >= 55 ? 'text-amber-600' : 'text-rose-600'}>
                     {report.compliance?.overallScore}%
                   </span>
                 </div>

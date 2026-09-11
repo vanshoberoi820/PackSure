@@ -115,7 +115,7 @@ export async function generateReport(inspection) {
       // Score bar
       doc.setFillColor(229, 231, 235);
       doc.roundedRect(80, y - 3, 60, 4, 1, 1, 'F');
-      const barColor = cat.score >= 80 ? [22, 163, 74] : cat.score >= 50 ? [245, 158, 11] : [239, 68, 68];
+      const barColor = cat.score > 80 ? [22, 163, 74] : cat.score >= 55 ? [245, 158, 11] : [239, 68, 68];
       doc.setFillColor(barColor[0], barColor[1], barColor[2]);
       doc.roundedRect(80, y - 3, (cat.score / 100) * 60, 4, 1, 1, 'F');
 

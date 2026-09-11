@@ -11,6 +11,7 @@
 let isSequenceRunning = false;
 let isMuted = false;
 let resumeIntervalId = null;
+let activeSpeechResolver = null;
 
 // Keep global reference on window to prevent Chromium garbage-collecting active utterance
 if (typeof window !== 'undefined') {
@@ -56,6 +57,12 @@ function stopResumeInterval() {
  */
 export function stopSpeech() {
   isSequenceRunning = false;
+  if (activeSpeechResolver) {
+    try {
+      activeSpeechResolver();
+    } catch (_) {}
+    activeSpeechResolver = null;
+  }
   if (typeof window !== 'undefined') {
     window.__packsureActiveUtterance = null;
     if (window.speechSynthesis) {
@@ -131,6 +138,7 @@ export function speakText(text, { rate = 1.05, pitch = 1.0 } = {}) {
 
     const cleanup = () => {
       if (timeoutId) clearTimeout(timeoutId);
+      if (activeSpeechResolver) activeSpeechResolver = null;
       if (typeof window !== 'undefined') {
         window.__packsureActiveUtterance = null;
       }
@@ -143,6 +151,8 @@ export function speakText(text, { rate = 1.05, pitch = 1.0 } = {}) {
         resolve(success);
       }
     };
+
+    activeSpeechResolver = () => done(false);
 
     // Watchdog timer: automatically resolve if browser drops onend (Chromium bug)
     // Dynamic duration based on text length (approx 75ms per character, min 1.8s, max 4.5s)
@@ -189,6 +199,88 @@ export function speakText(text, { rate = 1.05, pitch = 1.0 } = {}) {
   });
 }
 
+const FULL_MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+
+function getOrdinalDay(day) {
+  const j = day % 10, k = day % 100;
+  if (j === 1 && k !== 11) return day + 'st';
+  if (j === 2 && k !== 12) return day + 'nd';
+  if (j === 3 && k !== 13) return day + 'rd';
+  return day + 'th';
+}
+
+/**
+ * Convert dates like "03/2026" or "15/08/2025" into natural spoken English ("March 2026", "15th August 2025")
+ */
+export function formatDateForSpeech(rawStr) {
+  if (!rawStr || typeof rawStr !== 'string') return '';
+  let str = rawStr.trim();
+
+  // If already relative phrase like "12 months from packing"
+  if (/(\d+)\s*months?/i.test(str)) {
+    return str
+      .replace(/mfg\.?|mfd\.?/gi, 'manufacture')
+      .replace(/pkg\.?|pkd\.?|pack(?:ing)?/gi, 'packing');
+  }
+
+  // Remove mfg/pkg prefixes if present
+  str = str.replace(/^(?:mfg\.?|mfd\.?|pkg\.?|pkd\.?|exp\.?|best before|use by|date|on|of)\s*[:\-.]?\s*/gi, '').trim();
+
+  // Match DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+  const dmyMatch = str.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+  if (dmyMatch) {
+    const day = parseInt(dmyMatch[1], 10);
+    const monthIdx = parseInt(dmyMatch[2], 10) - 1;
+    let year = parseInt(dmyMatch[3], 10);
+    if (year < 100) year += 2000;
+    if (monthIdx >= 0 && monthIdx <= 11 && day >= 1 && day <= 31) {
+      return `${getOrdinalDay(day)} ${FULL_MONTH_NAMES[monthIdx]} ${year}`;
+    }
+  }
+
+  // Match MM/YYYY or MM-YYYY or MM.YYYY or MM/YY
+  const myMatch = str.match(/^(\d{1,2})[\/\-\.](\d{2,4})$/);
+  if (myMatch) {
+    const monthIdx = parseInt(myMatch[1], 10) - 1;
+    let year = parseInt(myMatch[2], 10);
+    if (year < 100) year += 2000;
+    if (monthIdx >= 0 && monthIdx <= 11) {
+      return `${FULL_MONTH_NAMES[monthIdx]} ${year}`;
+    }
+  }
+
+  // Match Day MonthName Year: "28 APR 2026", "15 August 2025"
+  const dayNamedMatch = str.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{2,4})$/);
+  if (dayNamedMatch) {
+    const day = parseInt(dayNamedMatch[1], 10);
+    const monKey = dayNamedMatch[2].toLowerCase().substring(0, 3);
+    const monthLookup = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+    if (monKey in monthLookup) {
+      let year = parseInt(dayNamedMatch[3], 10);
+      if (year < 100) year += 2000;
+      return `${getOrdinalDay(day)} ${FULL_MONTH_NAMES[monthLookup[monKey]]} ${year}`;
+    }
+  }
+
+  // Match MonthName Year: "APR 2026", "April 2026"
+  const namedMatch = str.match(/^([A-Za-z]{3,9})\s*[,']?\s*(\d{2,4})$/i);
+  if (namedMatch) {
+    const monKey = namedMatch[1].toLowerCase().substring(0, 3);
+    const monthLookup = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+    if (monKey in monthLookup) {
+      const monthIdx = monthLookup[monKey];
+      let year = parseInt(namedMatch[2], 10);
+      if (year < 100) year += 2000;
+      return `${FULL_MONTH_NAMES[monthIdx]} ${year}`;
+    }
+  }
+
+  return str;
+}
+
 /**
  * Generate natural spoken sentences for the 4 key declarations.
  * @param {Array} declarations
@@ -222,41 +314,70 @@ export function buildKeyDeclarationsData(declarations = [], compliance = {}, dat
       : 'violation';
 
   if (mrp && mrp.value && mrp.status !== 'not_detected') {
-    const cleanPrice = mrp.value.replace(/[^0-9.]/g, '');
+    let cleanPrice = mrp.value.replace(/[^0-9.]/g, '');
+    if (cleanPrice.endsWith('.00') || cleanPrice.endsWith('.0')) {
+      cleanPrice = cleanPrice.replace(/\.00?$/, '');
+    }
     const hasTax = /tax|incl/i.test(mrp.value);
-    mrpText = `MRP: ${cleanPrice ? cleanPrice + ' rupees' : mrp.value}${hasTax ? ', inclusive of taxes' : ''}.`;
+    mrpText = `Maximum Retail Price: ${cleanPrice ? cleanPrice + ' rupees' : mrp.value}${hasTax ? ', inclusive of all taxes' : ''}.`;
   } else {
     mrpText = `Maximum Retail Price was not detected on label.`;
   }
 
-  // 2. Use By / Expiry Date
+  // 2. Manufacturing / Packing Date (Dedicated Step)
+  let mfgText = '';
+  let mfgValue = mfgDate?.value || 'Not Detected';
+  let mfgStatus = mfgDate?.status === 'detected' ? 'compliant' : mfgDate?.status === 'needs_review' ? 'needs_review' : 'violation';
+
+  if (dates.isFutureDated) {
+    mfgStatus = 'violation';
+    mfgValue = `${mfgDate?.value} (Future Dated)`;
+    mfgText = `Warning: Manufacturing date ${formatDateForSpeech(mfgDate?.value)} is post-dated.`;
+  } else if (mfgDate && mfgDate.value && mfgDate.status !== 'not_detected') {
+    const mfgSpoken = formatDateForSpeech(mfgDate.value);
+    mfgText = `Manufacturing date: ${mfgSpoken}.`;
+  } else {
+    mfgText = `Manufacturing date was not detected.`;
+  }
+
+  // 3. Use By / Expiry Date (Dedicated Step)
   let expiryText = '';
   let expiryValue = '';
   let expiryStatus = 'compliant';
 
   if (dates.isNotApplicable || bestBefore?.status === 'not_applicable') {
-    expiryValue = 'Not Applicable (Durable/Exempt)';
+    expiryValue = 'Not Applicable (Durable / Exempt)';
     expiryStatus = 'compliant';
-    expiryText = `Use by date: Exempt commodity.`;
+    expiryText = `Use by date: Exempt durable commodity.`;
   } else if (dates.isExpired) {
+    const expSpoken = formatDateForSpeech(dates.expiryDate || bestBefore?.value);
     expiryValue = `EXPIRED (${dates.expiryDate || bestBefore?.value || 'Passed'})`;
     expiryStatus = 'violation';
-    expiryText = `Warning: Product is expired as of ${dates.expiryDate || bestBefore?.value}.`;
+    expiryText = `Warning: Product is expired as of ${expSpoken}. Distribution prohibited.`;
   } else if (dates.isNearExpiry) {
+    const expSpoken = formatDateForSpeech(dates.expiryDate || bestBefore?.value);
     expiryValue = `Near Expiry (${dates.expiryDate || bestBefore?.value})`;
     expiryStatus = 'needs_review';
-    expiryText = `Notice: Product is near expiry, on ${dates.expiryDate || bestBefore?.value}.`;
+    expiryText = `Notice: Product is near expiry on ${expSpoken}, with ${dates.daysToExpiry} days remaining.`;
   } else if (bestBefore && bestBefore.value && bestBefore.status !== 'not_detected') {
-    expiryValue = dates.expiryDate ? `${bestBefore.value} (Expires ${dates.expiryDate})` : bestBefore.value;
-    expiryStatus = 'compliant';
-    expiryText = `Use by date: ${bestBefore.value}. Valid shelf life.`;
+    const expSpoken = formatDateForSpeech(bestBefore.value);
+    if (dates.isComputedExpiry && dates.expiryDate) {
+      const compSpoken = formatDateForSpeech(dates.expiryDate);
+      expiryValue = `${bestBefore.value} (Expires ${dates.expiryDate})`;
+      expiryStatus = 'compliant';
+      expiryText = `Best before: ${expSpoken}, expiring in ${compSpoken}. Valid shelf life.`;
+    } else {
+      expiryValue = bestBefore.value;
+      expiryStatus = 'compliant';
+      expiryText = `Use by date: ${expSpoken}. Valid shelf life.`;
+    }
   } else {
     expiryValue = 'Not Detected';
     expiryStatus = 'violation';
     expiryText = `Expiry date was not detected on this item.`;
   }
 
-  // 3. Net Wt (Net Quantity)
+  // 4. Net Wt (Net Quantity)
   let netQtyText = '';
   let netQtyValue = netQty?.value || 'Not Detected';
   let netQtyStatus =
@@ -267,12 +388,18 @@ export function buildKeyDeclarationsData(declarations = [], compliance = {}, dat
       : 'violation';
 
   if (netQty && netQty.value && netQty.status !== 'not_detected') {
-    netQtyText = `Net weight declared: ${netQty.value}.`;
+    const cleanQty = netQty.value
+      .replace(/\bkg\b/gi, 'kilograms')
+      .replace(/\bgms?\b|\bg\b/gi, 'grams')
+      .replace(/\bml\b/gi, 'millilitres')
+      .replace(/\bltr?s?\b|\bl\b/gi, 'litres')
+      .replace(/\bpc?s\b|\bn\b/gi, 'units');
+    netQtyText = `Net quantity declared: ${cleanQty}.`;
   } else {
     netQtyText = `Net quantity declaration was not found.`;
   }
 
-  // 4. Manufacture & Country of Origin
+  // 5. Manufacture & Country of Origin
   let originText = '';
   let originValue = '';
   let originStatus = 'compliant';
@@ -283,7 +410,7 @@ export function buildKeyDeclarationsData(declarations = [], compliance = {}, dat
   if (mfgName && originCountry) {
     originValue = `${mfgName} • ${originCountry}`;
     originStatus = 'compliant';
-    originText = `Manufactured by ${mfgName}. Origin: ${originCountry}.`;
+    originText = `Manufactured by ${mfgName}. Country of origin: ${originCountry}.`;
   } else if (mfgName) {
     originValue = mfgName;
     originStatus = country?.status === 'not_detected' ? 'needs_review' : 'compliant';
@@ -310,9 +437,19 @@ export function buildKeyDeclarationsData(declarations = [], compliance = {}, dat
       speechText: mrpText,
     },
     {
+      id: 'mfgDate',
+      title: 'Manufacturing / Packing Date',
+      subtitle: 'Rule 6(1)(d)',
+      icon: 'Calendar',
+      value: mfgValue,
+      status: mfgStatus,
+      confidence: mfgDate?.confidence || 0,
+      speechText: mfgText,
+    },
+    {
       id: 'useBy',
       title: 'Use By / Expiry Date',
-      subtitle: 'Rule 6(1)(d)',
+      subtitle: 'Rule 6(1)(d) proviso',
       icon: 'CalendarClock',
       value: expiryValue,
       status: expiryStatus,

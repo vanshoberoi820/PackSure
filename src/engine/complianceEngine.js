@@ -61,6 +61,15 @@ export const LEGAL_METROLOGY_RULES = [
     severity: 'medium',
   },
   {
+    field: 'importer',
+    rule: 'Rule 6(1)(a)',
+    ruleName: 'Importer Details (for Imported Goods)',
+    requirement: 'Name and address of importer if commodity is imported.',
+    weight: 2,
+    severity: 'low',
+    conditional: true,
+  },
+  {
     field: 'bestBefore',
     rule: 'Rule 6(1)(d) proviso',
     ruleName: 'Best Before / Expiry Date',
@@ -381,8 +390,19 @@ export function evaluateCompliance(declarations, ocrConfidence = 75, rawOcrText 
   for (const rule of LEGAL_METROLOGY_RULES) {
     const decl = declMap[rule.field];
 
+    mandatoryTotal += rule.weight;
+
+    if (rule.field === 'importer') {
+      const countryVal = (declMap['countryOfOrigin']?.value || '').toLowerCase();
+      const isImported = countryVal && !/india|ind\b|bharat/i.test(countryVal);
+      if (!isImported && (!decl || decl.status === 'not_detected')) {
+        // Domestic product: Importer declaration is exempt, award full weight without penalty
+        mandatoryEarned += rule.weight;
+        continue;
+      }
+    }
+
     if (rule.field === 'bestBefore') {
-      mandatoryTotal += rule.weight;
       if (!commodityInfo.isExpiryApplicable) {
         mandatoryEarned += rule.weight;
         if (decl && (decl.status === 'not_detected' || !decl.value)) {
@@ -407,8 +427,6 @@ export function evaluateCompliance(declarations, ocrConfidence = 75, rawOcrText 
         });
         continue;
       }
-    } else {
-      mandatoryTotal += rule.weight;
     }
 
     if (!decl || decl.status === 'not_detected') {
@@ -488,14 +506,12 @@ export function evaluateCompliance(declarations, ocrConfidence = 75, rawOcrText 
   );
 
   let status;
-  const highViolations = violations.filter((v) => v.severity === 'high');
-
-  if (highViolations.length >= 3 || dateAssessment.isExpired || dateAssessment.isFutureDated || overallScore < 45) {
-    status = 'violation';
-  } else if (overallScore >= 75 && highViolations.length <= 1) {
-    status = 'compliant';
+  if (dateAssessment.isExpired || dateAssessment.isFutureDated || overallScore < 55) {
+    status = 'violation'; // Below 55 -> Red (violation)
+  } else if (overallScore > 80) {
+    status = 'compliant'; // Above 80 -> Green (compliant)
   } else {
-    status = 'needs_review';
+    status = 'needs_review'; // 55 to 80 -> Yellow (needs_review)
   }
 
   return {
