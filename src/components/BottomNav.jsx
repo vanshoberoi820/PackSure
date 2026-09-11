@@ -12,8 +12,8 @@ const NAV_ITEMS = [
 export default function BottomNav() {
   const location = useLocation();
 
-  // Hide on login, result, evidence, review pages
-  const hidePaths = ['/login', '/result', '/evidence', '/review', '/compare'];
+  // Hide on login, scan, result, evidence, review, compare pages
+  const hidePaths = ['/login', '/scan', '/result', '/evidence', '/review', '/compare'];
   if (hidePaths.some((p) => location.pathname.startsWith(p))) return null;
 
   return (

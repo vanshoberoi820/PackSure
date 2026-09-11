@@ -31,6 +31,7 @@ import { extractDeclarations } from '../engine/extractionEngine';
 import { evaluateCompliance } from '../engine/complianceEngine';
 import { analyzeVideoFrames } from '../engine/videoAnalysisEngine';
 import { detectBarcodes } from '../engine/barcodeEngine';
+import { analyzePackageWithAI, isAIVisionConfigured } from '../engine/aiVisionEngine';
 import {
   saveInspection,
   generateInspectionId,
@@ -382,22 +383,57 @@ export default function ScanPage() {
         throw new Error('No clear frames could be extracted from video.');
       }
 
-      setVoiceStatusText(`Analyzing ${frames.length} angles for declarations…`);
+      const finalBarcodes = [...liveBarcodes];
 
-      const videoResult = await analyzeVideoFrames(frames, (p) => {
-        setAnalysisProgress({
-          step: p.step,
-          label: p.label,
-          progress: p.progress,
+      let declarations = null;
+      let combinedOcrText = '';
+      let ocrConfidence = 95;
+      let compliance = null;
+      let videoResult = null;
+
+      // 1. Try AI Vision Model first on sharp keyframes
+      if (isAIVisionConfigured()) {
+        try {
+          setVoiceStatusText('AI Vision Model auditing video frames…');
+          const aiResult = await analyzePackageWithAI(
+            frames.map((f) => f.dataUrl),
+            setAnalysisProgress,
+            finalBarcodes
+          );
+          declarations = aiResult.declarations;
+          combinedOcrText = aiResult.rawOcrText;
+          ocrConfidence = aiResult.ocrConfidence;
+          compliance = evaluateCompliance(declarations, ocrConfidence, combinedOcrText);
+        } catch (aiErr) {
+          console.warn('AI Vision on video failed, falling back to local multi-frame engine:', aiErr);
+        }
+      }
+
+      // 2. Fallback to local multi-frame video analysis
+      if (!declarations) {
+        setVoiceStatusText(`Analyzing ${frames.length} angles for declarations…`);
+        videoResult = await analyzeVideoFrames(frames, (p) => {
+          setAnalysisProgress({
+            step: p.step,
+            label: p.label,
+            progress: p.progress,
+          });
+          setVoiceStatusText(p.label);
         });
-        setVoiceStatusText(p.label);
-      });
+        declarations = videoResult.declarations;
+        combinedOcrText = videoResult.ocrText;
+        ocrConfidence = videoResult.ocrConfidence;
+        compliance = videoResult.compliance;
+        if (videoResult.detectedBarcodes?.length > 0) {
+          for (const b of videoResult.detectedBarcodes) {
+            if (!finalBarcodes.some((x) => x.rawValue === b.rawValue)) {
+              finalBarcodes.push(b);
+            }
+          }
+        }
+      }
 
-      const finalBarcodes = videoResult.detectedBarcodes?.length > 0
-        ? videoResult.detectedBarcodes
-        : liveBarcodes;
-
-      let videoImageUrl = videoResult.productImage;
+      let videoImageUrl = videoResult?.productImage || frames[0]?.dataUrl || null;
       if (videoImageUrl) {
         try {
           const s3Url = await uploadImageToS3(videoImageUrl, `${inspectionId}-video`);
@@ -408,14 +444,19 @@ export default function ScanPage() {
       const newInspection = {
         id: inspectionId,
         productImage: videoImageUrl,
-        productName: videoResult.productName,
-        ocrText: videoResult.ocrText,
-        ocrConfidence: videoResult.ocrConfidence,
-        declarations: videoResult.declarations,
-        compliance: videoResult.compliance,
+        productName: declarations.find((d) => d.field === 'productName')?.value || 'Unknown Product',
+        ocrText: combinedOcrText,
+        ocrConfidence: ocrConfidence,
+        declarations,
+        compliance,
         detectedBarcodes: finalBarcodes,
-        scanMetadata: videoResult.scanMetadata,
-        frameResults: videoResult.frameResults,
+        scanMetadata: {
+          type: 'video',
+          durationSeconds: 15,
+          framesAnalyzed: frames.length,
+          engine: isAIVisionConfigured() ? 'ai_vision_model' : 'local_ocr',
+        },
+        frameResults: videoResult?.frameResults || [],
         officerReview: {
           notes: '',
           decisions: {},
@@ -424,15 +465,15 @@ export default function ScanPage() {
         },
         comparison: null,
         createdAt: new Date().toISOString(),
-        status: videoResult.compliance.status,
+        status: compliance.status,
       };
 
       saveInspection(newInspection);
 
       const items = buildKeyDeclarationsData(
-        videoResult.declarations,
-        videoResult.compliance,
-        videoResult.compliance?.dateAssessment
+        declarations,
+        compliance,
+        compliance?.dateAssessment
       );
       setKeyDeclarations(items);
       setAnalysisProgress({ step: 4, label: 'Voice Assistant Active', progress: 100 });
@@ -440,7 +481,7 @@ export default function ScanPage() {
       runVoiceAssistantSequence({
         items,
         enabled: voiceEnabled && !isMuted,
-        introText: '15-second video captured. Fusing multi-angle packaging declarations.',
+        introText: '15-second video captured. AI Inspection Model fusing multi-angle declarations.',
         onItemStart: (idx, item) => {
           setActiveVoiceIndex(idx);
           if (idx >= 0) {
@@ -523,68 +564,84 @@ export default function ScanPage() {
     }
 
     try {
-      let combinedOcrText = '';
-      let avgConfidence = 75;
       const allBarcodes = [...liveBarcodes];
       const seenBarcodes = new Set(allBarcodes.map((b) => b.rawValue));
 
-      if (images.length === 1) {
-        // Single Image Mode
-        setAnalysisProgress({ step: 0, label: 'Optimizing label readability…', progress: 10 });
-        setVoiceStatusText('Enhancing resolution & contrast…');
+      let declarations = null;
+      let combinedOcrText = '';
+      let avgConfidence = 95;
 
-        const ocrResult = await performOCR(images[0], (p) => {
-          setAnalysisProgress({ step: p.step, label: p.label, progress: p.progress });
-          setVoiceStatusText(p.label);
-        });
+      // 1. Try AI Vision Model first (high-precision extraction)
+      if (isAIVisionConfigured()) {
+        try {
+          setVoiceStatusText(images.length > 1 ? 'AI Vision Model fusing dual panels…' : 'AI Vision Model auditing declarations…');
+          const aiResult = await analyzePackageWithAI(images, setAnalysisProgress, allBarcodes);
+          declarations = aiResult.declarations;
+          combinedOcrText = aiResult.rawOcrText;
+          avgConfidence = aiResult.ocrConfidence;
+        } catch (aiErr) {
+          console.warn('AI Vision request failed, falling back to local OCR engine:', aiErr);
+        }
+      }
 
-        combinedOcrText = ocrResult.text;
-        avgConfidence = ocrResult.confidence;
+      // 2. Fallback to Local OCR engine if AI Vision is not available or failed
+      if (!declarations) {
+        if (images.length === 1) {
+          setAnalysisProgress({ step: 0, label: 'Optimizing label readability…', progress: 10 });
+          setVoiceStatusText('Enhancing resolution & contrast…');
 
-        if (ocrResult.detectedBarcodes) {
-          for (const b of ocrResult.detectedBarcodes) {
+          const ocrResult = await performOCR(images[0], (p) => {
+            setAnalysisProgress({ step: p.step, label: p.label, progress: p.progress });
+            setVoiceStatusText(p.label);
+          });
+
+          combinedOcrText = ocrResult.text;
+          avgConfidence = ocrResult.confidence;
+
+          if (ocrResult.detectedBarcodes) {
+            for (const b of ocrResult.detectedBarcodes) {
+              if (!seenBarcodes.has(b.rawValue)) {
+                seenBarcodes.add(b.rawValue);
+                allBarcodes.push(b);
+              }
+            }
+          }
+        } else {
+          setAnalysisProgress({ step: 1, label: 'Scanning Panel 1 (Front / Table)…', progress: 20 });
+          setVoiceStatusText('Reading Panel 1 declarations…');
+
+          const ocr1 = await performOCR(images[0], (p) => {
+            setAnalysisProgress({ step: 1, label: `Panel 1: ${p.label}`, progress: Math.round(p.progress * 0.45) });
+            setVoiceStatusText(`Reading Panel 1: ${p.label}`);
+          });
+
+          setAnalysisProgress({ step: 2, label: 'Scanning Panel 2 (Back / Legal Details)…', progress: 50 });
+          setVoiceStatusText('Reading Panel 2 declarations…');
+
+          const ocr2 = await performOCR(images[1], (p) => {
+            setAnalysisProgress({ step: 2, label: `Panel 2: ${p.label}`, progress: 50 + Math.round(p.progress * 0.45) });
+            setVoiceStatusText(`Reading Panel 2: ${p.label}`);
+          });
+
+          combinedOcrText = `--- [Panel 1 / Front / Table] ---\n${ocr1.text}\n\n--- [Panel 2 / Back / Legal Details] ---\n${ocr2.text}`;
+          avgConfidence = Math.round(((ocr1.confidence || 75) + (ocr2.confidence || 75)) / 2);
+
+          [...(ocr1.detectedBarcodes || []), ...(ocr2.detectedBarcodes || [])].forEach((b) => {
             if (!seenBarcodes.has(b.rawValue)) {
               seenBarcodes.add(b.rawValue);
               allBarcodes.push(b);
             }
-          }
+          });
         }
-      } else {
-        // Dual Image Mode (Panel 1 + Panel 2)
-        setAnalysisProgress({ step: 1, label: 'Scanning Panel 1 (Front / Table)…', progress: 20 });
-        setVoiceStatusText('Reading Panel 1 declarations…');
 
-        const ocr1 = await performOCR(images[0], (p) => {
-          setAnalysisProgress({ step: 1, label: `Panel 1: ${p.label}`, progress: Math.round(p.progress * 0.45) });
-          setVoiceStatusText(`Reading Panel 1: ${p.label}`);
-        });
+        setAnalysisProgress({ step: 3, label: 'Fusing Legal Metrology declarations…', progress: 85 });
+        setVoiceStatusText('Parsing Rule 6 declarations…');
 
-        setAnalysisProgress({ step: 2, label: 'Scanning Panel 2 (Back / Legal Details)…', progress: 50 });
-        setVoiceStatusText('Reading Panel 2 declarations…');
-
-        const ocr2 = await performOCR(images[1], (p) => {
-          setAnalysisProgress({ step: 2, label: `Panel 2: ${p.label}`, progress: 50 + Math.round(p.progress * 0.45) });
-          setVoiceStatusText(`Reading Panel 2: ${p.label}`);
-        });
-
-        combinedOcrText = `--- [Panel 1 / Front / Table] ---\n${ocr1.text}\n\n--- [Panel 2 / Back / Legal Details] ---\n${ocr2.text}`;
-        avgConfidence = Math.round(((ocr1.confidence || 75) + (ocr2.confidence || 75)) / 2);
-
-        [...(ocr1.detectedBarcodes || []), ...(ocr2.detectedBarcodes || [])].forEach((b) => {
-          if (!seenBarcodes.has(b.rawValue)) {
-            seenBarcodes.add(b.rawValue);
-            allBarcodes.push(b);
-          }
+        declarations = extractDeclarations(combinedOcrText, avgConfidence, {
+          source: images.length > 1 ? 'dual_panel_image' : 'single_image',
+          detectedBarcodes: allBarcodes,
         });
       }
-
-      setAnalysisProgress({ step: 3, label: 'Fusing Legal Metrology declarations…', progress: 85 });
-      setVoiceStatusText('Parsing Rule 6 declarations…');
-
-      const declarations = extractDeclarations(combinedOcrText, avgConfidence, {
-        source: images.length > 1 ? 'dual_panel_image' : 'single_image',
-        detectedBarcodes: allBarcodes,
-      });
 
       setAnalysisProgress({ step: 4, label: 'Legal Metrology compliance check…', progress: 95 });
       const compliance = evaluateCompliance(declarations, avgConfidence, combinedOcrText);
@@ -618,6 +675,7 @@ export default function ScanPage() {
         scanMetadata: {
           type: images.length > 1 ? 'dual_panel' : 'single_image',
           panelCount: images.length,
+          engine: isAIVisionConfigured() ? 'ai_vision_model' : 'local_ocr',
         },
         frameResults: [],
         officerReview: {
@@ -638,8 +696,8 @@ export default function ScanPage() {
       setAnalysisProgress({ step: 4, label: 'Voice Assistant Active', progress: 100 });
 
       const introMsg = images.length > 1
-        ? 'Dual product panels scanned. AI Voice Assistant announcing fused declarations.'
-        : 'Label scanned. AI Voice Assistant announcing key declarations.';
+        ? 'Dual product panels scanned. AI Inspection Model announcing declarations.'
+        : 'Product scanned. AI Inspection Model announcing declarations.';
 
       runVoiceAssistantSequence({
         items,
@@ -705,43 +763,43 @@ export default function ScanPage() {
         className="hidden"
       />
 
-      {/* Header */}
-      <div className="bg-white border-b border-gray-100 px-4 py-4 flex items-center justify-between shadow-sm sticky top-0 z-10">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => {
-              stopSpeech();
-              if (recordingStream) stopMediaStream(recordingStream);
-              navigate('/');
-            }}
-            className="p-1 hover:bg-gray-100 rounded-lg text-gray-500"
-          >
-            <ArrowLeft className="w-6 h-6" />
-          </button>
-          <h1 className="text-xl font-bold text-gray-900">
-            {step === 'analyzing'
-              ? 'Live Verification'
-              : step === 'recording_video'
-              ? (isRecording ? 'Recording 360° Video' : '360° Video Camera')
-              : 'Scan Product'}
-          </h1>
-        </div>
+      {/* Header (Hidden during active camera recording for full-screen view) */}
+      {step !== 'recording_video' && (
+        <div className="bg-white border-b border-gray-100 px-4 py-4 flex items-center justify-between shadow-sm sticky top-0 z-10">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                stopSpeech();
+                if (recordingStream) stopMediaStream(recordingStream);
+                navigate('/');
+              }}
+              className="p-1 hover:bg-gray-100 rounded-lg text-gray-500"
+            >
+              <ArrowLeft className="w-6 h-6" />
+            </button>
+            <h1 className="text-xl font-bold text-gray-900">
+              {step === 'analyzing'
+                ? 'Live Verification'
+                : 'Scan Product'}
+            </h1>
+          </div>
 
-        {step === 'analyzing' && (
-          <button
-            onClick={handleToggleMute}
-            className={`p-2 rounded-xl border flex items-center gap-1.5 text-xs font-semibold transition-all ${
-              isMuted
-                ? 'bg-rose-50 border-rose-200 text-rose-600'
-                : 'bg-primary-50 border-primary-200 text-primary-700 shadow-xs'
-            }`}
-            title={isMuted ? 'Unmute Voice Assistant' : 'Mute Voice Assistant'}
-          >
-            {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-            <span>{isMuted ? 'Muted' : 'Voice ON'}</span>
-          </button>
-        )}
-      </div>
+          {step === 'analyzing' && (
+            <button
+              onClick={handleToggleMute}
+              className={`p-2 rounded-xl border flex items-center gap-1.5 text-xs font-semibold transition-all ${
+                isMuted
+                  ? 'bg-rose-50 border-rose-200 text-rose-600'
+                  : 'bg-primary-50 border-primary-200 text-primary-700 shadow-xs'
+              }`}
+              title={isMuted ? 'Unmute Voice Assistant' : 'Mute Voice Assistant'}
+            >
+              {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+              <span>{isMuted ? 'Muted' : 'Voice ON'}</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* STEP 1: Select Scan Source */}
       {step === 'select' && (
@@ -825,14 +883,14 @@ export default function ScanPage() {
         </div>
       )}
 
-      {/* STEP 1.5: Video Live Recording Viewfinder */}
+      {/* STEP 1.5: Video Live Recording Viewfinder (Fullscreen Fixed for Mobile Phones) */}
       {step === 'recording_video' && (
-        <div className="flex-1 flex flex-col justify-between p-4 bg-black text-white relative overflow-hidden">
+        <div className="fixed inset-0 z-[100] bg-black text-white flex flex-col justify-between p-4 h-[100dvh] max-w-md mx-auto overflow-hidden">
           {/* Top Status & Timer Bar */}
-          <div className="relative z-10 bg-black/70 backdrop-blur-md rounded-2xl px-4 py-3 border border-white/15 flex items-center justify-between">
+          <div className="relative z-20 bg-black/80 backdrop-blur-md rounded-2xl px-4 py-3 border border-white/20 flex items-center justify-between shrink-0 shadow-lg">
             <div className="flex items-center gap-2.5">
               <div
-                className={`w-3 h-3 rounded-full ${
+                className={`w-3.5 h-3.5 rounded-full ${
                   isRecording ? 'bg-rose-500 animate-ping' : 'bg-emerald-400'
                 }`}
               />
@@ -841,19 +899,21 @@ export default function ScanPage() {
                   isRecording ? 'text-rose-400' : 'text-emerald-300'
                 }`}
               >
-                {isRecording ? 'Recording Video…' : 'Camera Ready'}
+                {isRecording ? 'Recording 360° Video…' : 'Camera Ready'}
               </span>
             </div>
 
-            <div className="flex items-center gap-2 font-mono font-bold text-sm bg-white/10 px-3 py-1 rounded-lg">
-              <span>00:{String(recordingProgress.remainingSec).padStart(2, '0')}</span>
+            <div className="flex items-center gap-2 font-mono font-bold text-sm bg-white/15 px-3 py-1 rounded-lg">
+              <span className={isRecording ? 'text-rose-300' : 'text-white'}>
+                00:{String(recordingProgress.remainingSec).padStart(2, '0')}
+              </span>
               <span className="text-gray-400 text-xs">/ 00:15</span>
             </div>
           </div>
 
           {/* Progress Bar (Visible when recording) */}
           {isRecording && (
-            <div className="w-full bg-white/20 h-2 rounded-full overflow-hidden my-2 relative z-10">
+            <div className="w-full bg-white/20 h-2 rounded-full overflow-hidden my-1 relative z-20 shrink-0">
               <div
                 className="bg-gradient-to-r from-emerald-400 to-primary-400 h-full transition-all duration-150"
                 style={{ width: `${recordingProgress.progressPct}%` }}
@@ -862,7 +922,7 @@ export default function ScanPage() {
           )}
 
           {/* Live Camera Viewport */}
-          <div className="flex-1 relative rounded-2xl overflow-hidden bg-slate-900 flex items-center justify-center border border-white/10 shadow-inner mt-2">
+          <div className="flex-1 min-h-0 relative rounded-2xl overflow-hidden bg-slate-950 flex items-center justify-center border border-white/10 shadow-inner my-2">
             <video
               ref={liveVideoRef}
               autoPlay
@@ -873,14 +933,14 @@ export default function ScanPage() {
 
             {/* Live Detected Barcode Pill Overlay */}
             {liveBarcodes.length > 0 && (
-              <div className="absolute bottom-4 left-4 right-4 z-20 flex flex-col items-center gap-2 pointer-events-auto animate-fade-in">
+              <div className="absolute bottom-3 left-3 right-3 z-30 flex flex-col items-center gap-1.5 pointer-events-auto animate-fade-in">
                 {liveBarcodes.map((bc, idx) => (
                   <div
                     key={idx}
-                    className="bg-slate-900/90 backdrop-blur-md border border-white/25 text-white px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-3 text-xs max-w-sm w-full"
+                    className="bg-slate-900/90 backdrop-blur-md border border-white/25 text-white px-3.5 py-2 rounded-xl shadow-2xl flex items-center gap-2.5 text-xs max-w-sm w-full"
                   >
-                    <div className="w-8 h-8 rounded-xl bg-primary-600 flex items-center justify-center text-white shrink-0 shadow-sm">
-                      {bc.type === 'qr' ? <QrCode className="w-4 h-4" /> : <Barcode className="w-4 h-4" />}
+                    <div className="w-7 h-7 rounded-lg bg-primary-600 flex items-center justify-center text-white shrink-0 shadow-sm">
+                      {bc.type === 'qr' ? <QrCode className="w-3.5 h-3.5" /> : <Barcode className="w-3.5 h-3.5" />}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
@@ -888,12 +948,12 @@ export default function ScanPage() {
                           {bc.type === 'qr' ? 'QR Code Detected' : 'Barcode Detected'}
                         </span>
                         {bc.country && (
-                          <span className="bg-emerald-500/20 text-emerald-300 font-semibold text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/30">
+                          <span className="bg-emerald-500/20 text-emerald-300 font-semibold text-[10px] px-1.5 py-0.2 rounded-full border border-emerald-500/30">
                             {bc.countryFlag} {bc.country}
                           </span>
                         )}
                       </div>
-                      <p className="text-[11px] font-mono text-gray-300 truncate mt-0.5">
+                      <p className="text-[10px] font-mono text-gray-300 truncate mt-0.5">
                         {bc.rawValue}
                       </p>
                     </div>
@@ -903,12 +963,12 @@ export default function ScanPage() {
             )}
           </div>
 
-          {/* Start & Stop Controls */}
-          <div className="relative z-10 space-y-3 pt-3">
+          {/* Start & Stop Controls (Pinned & Always Visible at Screen Bottom) */}
+          <div className="relative z-30 pt-1 pb-3 shrink-0">
             <div className="flex items-center gap-3">
               <button
                 onClick={handleCancelVideo}
-                className="px-5 py-3.5 bg-white/15 hover:bg-white/25 text-white font-semibold rounded-2xl text-xs border border-white/20 transition-all shrink-0"
+                className="px-4 py-3.5 bg-white/15 hover:bg-white/25 active:bg-white/30 text-white font-semibold rounded-2xl text-xs border border-white/20 transition-all shrink-0"
               >
                 Cancel
               </button>
@@ -916,7 +976,7 @@ export default function ScanPage() {
               {!isRecording ? (
                 <button
                   onClick={handleStartRecording}
-                  className="flex-1 py-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold text-sm rounded-2xl flex items-center justify-center gap-2.5 shadow-xl shadow-emerald-950/50 active:scale-[0.98] transition-all"
+                  className="flex-1 py-4 bg-gradient-to-r from-emerald-500 via-emerald-600 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold text-sm rounded-2xl flex items-center justify-center gap-2.5 shadow-2xl shadow-emerald-950/80 active:scale-[0.98] transition-all"
                 >
                   <div className="w-3.5 h-3.5 rounded-full bg-white animate-ping" />
                   Start Recording
@@ -924,7 +984,7 @@ export default function ScanPage() {
               ) : (
                 <button
                   onClick={handleStopVideoEarly}
-                  className="flex-1 py-4 bg-gradient-to-r from-rose-600 via-rose-700 to-red-600 hover:from-rose-700 hover:to-red-700 text-white font-bold text-sm rounded-2xl flex items-center justify-center gap-2.5 shadow-xl shadow-rose-950/50 active:scale-[0.98] transition-all"
+                  className="flex-1 py-4 bg-gradient-to-r from-rose-600 via-rose-700 to-red-600 hover:from-rose-700 hover:to-red-700 text-white font-bold text-sm rounded-2xl flex items-center justify-center gap-2.5 shadow-2xl shadow-rose-950/80 active:scale-[0.98] transition-all animate-pulse"
                 >
                   <Square className="w-4 h-4 fill-white" />
                   Stop Recording & Analyze
