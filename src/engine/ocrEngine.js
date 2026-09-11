@@ -3,7 +3,7 @@
    Includes multi-angle fallback (0°, 90°, 270°, 180°) & Barcode detection
    ───────────────────────────────────────────── */
 import { createWorker } from 'tesseract.js';
-import { preprocessImage, resizeImage, rotateImage } from '../utils/imageUtils.js';
+import { preprocessImage, resizeImage, rotateImage, cropCenterROI } from '../utils/imageUtils.js';
 import { normalizeOCRText } from '../utils/ocrNormalization.js';
 import { detectBarcodes } from './barcodeEngine.js';
 
@@ -34,7 +34,7 @@ async function getOCRWorker(onProgress = () => {}) {
       });
 
       await worker.setParameters({
-        tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz₹Rs/.:,;()-\'%&@#+* "[]_®|!?~',
+        tessedit_pageseg_mode: '11', // PSM 11 Sparse Text: Eliminates multi-column crosstalk and captures label tables
         preserve_interword_spaces: '1',
       });
 
@@ -72,6 +72,7 @@ export async function performOCR(imageDataUrl, onProgress = () => {}) {
     onProgress({ step: 1, label: 'Running deep OCR text extraction…', progress: 50 });
     const worker = await getOCRWorker(onProgress);
 
+    // Pass 1: Full image recognition with PSM 11
     const primaryResult = await worker.recognize(enhancedImg);
     let text = normalizeOCRText(primaryResult.data.text || '');
     let confidence = primaryResult.data.confidence || 0;
@@ -83,28 +84,44 @@ export async function performOCR(imageDataUrl, onProgress = () => {}) {
 
     const candidateTexts = [text];
 
-    // If text length is low or confidence is sparse, test rotated views (90°, 270°, 180°)
+    // Pass 2: Zoomed Center Region of Interest (ROI) for reading small printed tables (MRP, Expiry, Mfg Date, Batch)
+    try {
+      onProgress({ step: 1, label: 'Reading fine-print packaging table…', progress: 75 });
+      const centerRoiImg = await cropCenterROI(optimizedImg, 2.0);
+      const roiEnhanced = await preprocessImage(centerRoiImg, 1.55);
+      const roiResult = await worker.recognize(roiEnhanced);
+      const roiText = normalizeOCRText(roiResult.data.text || '');
+
+      if (roiText && roiText.length > 5) {
+        text = `${text}\n${roiText}`.trim();
+        candidateTexts.push(roiText);
+        confidence = Math.max(confidence, roiResult.data.confidence || 0);
+
+        if (detectedBarcodes.length === 0) {
+          const roiBc = await detectBarcodes(centerRoiImg);
+          if (roiBc.length > 0) detectedBarcodes = roiBc;
+        }
+      }
+    } catch (roiErr) {
+      console.warn('Center ROI OCR pass skipped:', roiErr);
+    }
+
+    // Pass 3: If text length is low or confidence is sparse, test rotated views (90°, 270°, 180°)
     if (text.length < 50 || confidence < 55) {
       const angles = [90, 270, 180];
       for (const angle of angles) {
-        onProgress({ step: 1, label: `Testing label orientation (${angle}°)…`, progress: 70 });
+        onProgress({ step: 1, label: `Testing label orientation (${angle}°)…`, progress: 85 });
         try {
           const rotatedImg = await rotateImage(enhancedImg, angle);
           const rotatedResult = await worker.recognize(rotatedImg);
           const rotText = normalizeOCRText(rotatedResult.data.text || '');
           const rotConf = rotatedResult.data.confidence || 0;
 
-          if (rotText.length > text.length || rotConf > confidence + 10) {
-            text = rotText;
+          if (rotText.length > 15) {
+            text = `${text}\n${rotText}`.trim();
             confidence = Math.max(confidence, rotConf);
-            words = (rotatedResult.data.words || []).map((w) => ({
-              text: w.text,
-              confidence: w.confidence,
-              bbox: w.bbox,
-            }));
             candidateTexts.push(rotText);
 
-            // Also check barcodes on rotated image if not found yet
             if (detectedBarcodes.length === 0) {
               const rotBc = await detectBarcodes(rotatedImg);
               if (rotBc.length > 0) detectedBarcodes = rotBc;
@@ -116,26 +133,11 @@ export async function performOCR(imageDataUrl, onProgress = () => {}) {
       }
     }
 
-    // If still sparse, test original non-preprocessed image
-    if (text.length < 30) {
-      try {
-        const secondaryResult = await worker.recognize(optimizedImg);
-        const secText = normalizeOCRText(secondaryResult.data.text || '');
-        if (secText.length > text.length) {
-          text = `${text}\n${secText}`.trim();
-          confidence = Math.max(confidence, secondaryResult.data.confidence || 0);
-          candidateTexts.push(secText);
-        }
-      } catch (e) {
-        // secondary pass ignored
-      }
-    }
-
     onProgress({ step: 2, label: 'Text & Barcode recognition complete', progress: 100 });
 
     return {
       text: text || '',
-      confidence: Math.round(confidence || (text.length > 10 ? 75 : 40)),
+      confidence: Math.round(confidence || (text.length > 10 ? 80 : 45)),
       words,
       candidateTexts,
       detectedBarcodes,
@@ -156,20 +158,31 @@ export async function performFrameOCR(frameDataUrl) {
   try {
     const worker = await getOCRWorker();
     const result = await worker.recognize(frameDataUrl);
-    const text = normalizeOCRText(result.data.text || '');
-    const confidence = Math.round(result.data.confidence || 0);
+    let text = normalizeOCRText(result.data.text || '');
+    let confidence = Math.round(result.data.confidence || 0);
     const words = (result.data.words || []).map((w) => ({
       text: w.text,
       confidence: w.confidence,
       bbox: w.bbox,
     }));
 
+    // Perform ROI sub-pass for video frames as well to capture small stacked text
+    try {
+      const roi = await cropCenterROI(frameDataUrl, 1.8);
+      const roiRes = await worker.recognize(roi);
+      const roiTxt = normalizeOCRText(roiRes.data.text || '');
+      if (roiTxt && roiTxt.length > 5) {
+        text = `${text}\n${roiTxt}`.trim();
+        confidence = Math.max(confidence, Math.round(roiRes.data.confidence || 0));
+      }
+    } catch (_) {}
+
     let detectedBarcodes = [];
     try {
       detectedBarcodes = await detectBarcodes(frameDataUrl);
     } catch (_) {}
 
-    return { text, confidence: confidence || (text.length > 5 ? 70 : 30), words, detectedBarcodes };
+    return { text, confidence: confidence || (text.length > 5 ? 75 : 35), words, detectedBarcodes };
   } catch (err) {
     console.warn('Frame OCR error:', err);
     return { text: '', confidence: 0, words: [], detectedBarcodes: [] };
