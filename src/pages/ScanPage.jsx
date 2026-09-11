@@ -21,6 +21,10 @@ import {
   Barcode,
   QrCode,
   CheckCircle2,
+  Plus,
+  Trash2,
+  Layers,
+  FileCheck,
 } from 'lucide-react';
 import { performOCR, assessImageQuality } from '../engine/ocrEngine';
 import { extractDeclarations } from '../engine/extractionEngine';
@@ -67,10 +71,14 @@ function getIconForField(fieldId) {
 export default function ScanPage() {
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
+  const secondFileInputRef = useRef(null);
+  const secondCameraInputRef = useRef(null);
   const liveVideoRef = useRef(null);
 
-  // State variables
-  const [image, setImage] = useState(null);
+  // Multi-image state (up to 2 images for front + back panels)
+  const [images, setImages] = useState([]);
+  const [activePreviewIndex, setActivePreviewIndex] = useState(0);
+
   const [isDemo, setIsDemo] = useState(false);
   const [scanType, setScanType] = useState('image'); // 'image' | 'video' | 'demo'
   const [step, setStep] = useState('select'); // 'select', 'recording_video', 'preview', 'analyzing'
@@ -124,16 +132,31 @@ export default function ScanPage() {
     return () => clearInterval(intervalId);
   }, [step]);
 
-  // Scan preview image for barcodes immediately upon upload
+  // Scan preview images for barcodes upon upload
   useEffect(() => {
-    if (step === 'preview' && image) {
-      detectBarcodes(image).then((bc) => {
-        if (bc && bc.length > 0) {
-          setLiveBarcodes(bc);
-        }
-      }).catch(() => {});
+    if (step === 'preview' && images.length > 0) {
+      const allFound = [];
+      const seen = new Set();
+
+      Promise.all(
+        images.map(async (img) => {
+          try {
+            const bcs = await detectBarcodes(img);
+            if (bcs && bcs.length > 0) {
+              for (const b of bcs) {
+                if (!seen.has(b.rawValue)) {
+                  seen.add(b.rawValue);
+                  allFound.push(b);
+                }
+              }
+            }
+          } catch (_) {}
+        })
+      ).then(() => {
+        if (allFound.length > 0) setLiveBarcodes(allFound);
+      });
     }
-  }, [step, image]);
+  }, [step, images]);
 
   // Handle Photo / File Source
   const handleSelectSource = (mode) => {
@@ -148,28 +171,63 @@ export default function ScanPage() {
     fileInputRef.current?.click();
   };
 
-  // Handle image file selection
+  // Handle primary image file selection (allows 1 or 2 images)
   const handleFileChange = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []).slice(0, 2);
+    if (!files || files.length === 0) return;
 
     try {
-      setStep('preview');
+      setError(null);
       setIsDemo(false);
       setScanType('image');
-      const base64 = await imageToBase64(file);
-      const highRes = await resizeImage(base64, 1800, 1800, 0.95);
-      setImage(highRes);
 
-      // Trigger instant background barcode scan
-      detectBarcodes(highRes).then((bcs) => {
-        if (bcs && bcs.length > 0) setLiveBarcodes(bcs);
-      });
+      const loadedImages = [];
+      for (const file of files) {
+        const base64 = await imageToBase64(file);
+        const highRes = await resizeImage(base64, 1800, 1800, 0.95);
+        loadedImages.push(highRes);
+      }
+
+      setImages(loadedImages);
+      setActivePreviewIndex(0);
+      setStep('preview');
     } catch (err) {
       console.error(err);
       setError('Failed to load image. Please try again.');
       setStep('select');
     }
+  };
+
+  // Handle adding a 2nd image (Back panel or additional details)
+  const handleSecondFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      setError(null);
+      const base64 = await imageToBase64(file);
+      const highRes = await resizeImage(base64, 1800, 1800, 0.95);
+
+      setImages((prev) => {
+        const next = [...prev];
+        if (next.length >= 2) {
+          next[1] = highRes;
+        } else {
+          next.push(highRes);
+        }
+        return next;
+      });
+      setActivePreviewIndex(1);
+    } catch (err) {
+      console.error('Failed to add 2nd image:', err);
+      setError('Failed to load 2nd image. Please try again.');
+    }
+  };
+
+  // Remove the 2nd image
+  const handleRemoveSecondImage = () => {
+    setImages((prev) => prev.slice(0, 1));
+    setActivePreviewIndex(0);
   };
 
   // Step 1: Open Camera Viewfinder for 15-Second Video Flow
@@ -259,7 +317,6 @@ export default function ScanPage() {
     setError(null);
   };
 
-
   // Load demo product
   const handleUseDemo = () => {
     setError(null);
@@ -270,7 +327,8 @@ export default function ScanPage() {
     ]);
     setStep('preview');
     const demoInspection = getDemoInspection('TEMP');
-    setImage(demoInspection.productImage);
+    setImages([demoInspection.productImage]);
+    setActivePreviewIndex(0);
   };
 
   // Retake image/video
@@ -278,7 +336,8 @@ export default function ScanPage() {
     stopSpeech();
     if (recordingStream) stopMediaStream(recordingStream);
     setRecordingStream(null);
-    setImage(null);
+    setImages([]);
+    setActivePreviewIndex(0);
     setVideoBlob(null);
     setIsDemo(false);
     setStep('select');
@@ -408,8 +467,10 @@ export default function ScanPage() {
     }
   };
 
-  // Analyze Single Image / Demo
+  // Analyze Single or Dual Image / Demo
   const handleAnalyze = async () => {
+    if (!images || images.length === 0) return;
+
     setStep('analyzing');
     setError(null);
     setActiveVoiceIndex(-1);
@@ -462,61 +523,101 @@ export default function ScanPage() {
     }
 
     try {
-      setAnalysisProgress({ step: 0, label: 'Optimizing label readability…', progress: 10 });
-      setVoiceStatusText('Enhancing resolution & contrast…');
-      await new Promise((r) => setTimeout(r, 300));
+      let combinedOcrText = '';
+      let avgConfidence = 75;
+      const allBarcodes = [...liveBarcodes];
+      const seenBarcodes = new Set(allBarcodes.map((b) => b.rawValue));
 
-      const ocrResult = await performOCR(image, (p) => {
-        setAnalysisProgress({
-          step: p.step,
-          label: p.label,
-          progress: p.progress,
+      if (images.length === 1) {
+        // Single Image Mode
+        setAnalysisProgress({ step: 0, label: 'Optimizing label readability…', progress: 10 });
+        setVoiceStatusText('Enhancing resolution & contrast…');
+
+        const ocrResult = await performOCR(images[0], (p) => {
+          setAnalysisProgress({ step: p.step, label: p.label, progress: p.progress });
+          setVoiceStatusText(p.label);
         });
-        setVoiceStatusText(p.label);
-      });
 
-      const finalBarcodes = ocrResult.detectedBarcodes?.length > 0
-        ? ocrResult.detectedBarcodes
-        : liveBarcodes;
+        combinedOcrText = ocrResult.text;
+        avgConfidence = ocrResult.confidence;
 
-      const qualityAssess = assessImageQuality(ocrResult);
-      if (!qualityAssess.usable) {
-        setError(qualityAssess.message);
-        setStep('preview');
-        return;
+        if (ocrResult.detectedBarcodes) {
+          for (const b of ocrResult.detectedBarcodes) {
+            if (!seenBarcodes.has(b.rawValue)) {
+              seenBarcodes.add(b.rawValue);
+              allBarcodes.push(b);
+            }
+          }
+        }
+      } else {
+        // Dual Image Mode (Panel 1 + Panel 2)
+        setAnalysisProgress({ step: 1, label: 'Scanning Panel 1 (Front / Table)…', progress: 20 });
+        setVoiceStatusText('Reading Panel 1 declarations…');
+
+        const ocr1 = await performOCR(images[0], (p) => {
+          setAnalysisProgress({ step: 1, label: `Panel 1: ${p.label}`, progress: Math.round(p.progress * 0.45) });
+          setVoiceStatusText(`Reading Panel 1: ${p.label}`);
+        });
+
+        setAnalysisProgress({ step: 2, label: 'Scanning Panel 2 (Back / Legal Details)…', progress: 50 });
+        setVoiceStatusText('Reading Panel 2 declarations…');
+
+        const ocr2 = await performOCR(images[1], (p) => {
+          setAnalysisProgress({ step: 2, label: `Panel 2: ${p.label}`, progress: 50 + Math.round(p.progress * 0.45) });
+          setVoiceStatusText(`Reading Panel 2: ${p.label}`);
+        });
+
+        combinedOcrText = `--- [Panel 1 / Front / Table] ---\n${ocr1.text}\n\n--- [Panel 2 / Back / Legal Details] ---\n${ocr2.text}`;
+        avgConfidence = Math.round(((ocr1.confidence || 75) + (ocr2.confidence || 75)) / 2);
+
+        [...(ocr1.detectedBarcodes || []), ...(ocr2.detectedBarcodes || [])].forEach((b) => {
+          if (!seenBarcodes.has(b.rawValue)) {
+            seenBarcodes.add(b.rawValue);
+            allBarcodes.push(b);
+          }
+        });
       }
 
-      setAnalysisProgress({ step: 3, label: 'Extracting legal declarations…', progress: 65 });
-      setVoiceStatusText('Parsing Legal Metrology declarations…');
-      const declarations = extractDeclarations(ocrResult.text, ocrResult.confidence, {
-        source: 'single_image',
-        detectedBarcodes: finalBarcodes,
+      setAnalysisProgress({ step: 3, label: 'Fusing Legal Metrology declarations…', progress: 85 });
+      setVoiceStatusText('Parsing Rule 6 declarations…');
+
+      const declarations = extractDeclarations(combinedOcrText, avgConfidence, {
+        source: images.length > 1 ? 'dual_panel_image' : 'single_image',
+        detectedBarcodes: allBarcodes,
       });
 
-      setAnalysisProgress({ step: 4, label: 'Legal Metrology compliance check…', progress: 90 });
-      const compliance = evaluateCompliance(declarations, ocrResult.confidence, ocrResult.text);
+      setAnalysisProgress({ step: 4, label: 'Legal Metrology compliance check…', progress: 95 });
+      const compliance = evaluateCompliance(declarations, avgConfidence, combinedOcrText);
 
-      let finalImageUrl = image;
-      if (image) {
-        try {
-          const s3Url = await uploadImageToS3(image, inspectionId);
-          if (s3Url) finalImageUrl = s3Url;
-        } catch (_) {}
-      }
+      // S3 Cloud Upload
+      let primaryUrl = images[0];
+      let secondaryUrl = images[1] || null;
+
+      try {
+        if (images[0]) {
+          const s3_1 = await uploadImageToS3(images[0], `${inspectionId}-panel1`);
+          if (s3_1) primaryUrl = s3_1;
+        }
+        if (images[1]) {
+          const s3_2 = await uploadImageToS3(images[1], `${inspectionId}-panel2`);
+          if (s3_2) secondaryUrl = s3_2;
+        }
+      } catch (_) {}
 
       const newInspection = {
         id: inspectionId,
-        productImage: finalImageUrl,
+        productImage: primaryUrl,
+        secondaryImage: secondaryUrl,
+        extraImages: [primaryUrl, ...(secondaryUrl ? [secondaryUrl] : [])],
         productName: declarations.find((d) => d.field === 'productName')?.value || 'Unknown Product',
-        ocrText: ocrResult.text,
-        ocrConfidence: ocrResult.confidence,
+        ocrText: combinedOcrText,
+        ocrConfidence: avgConfidence,
         declarations,
         compliance,
-        detectedBarcodes: finalBarcodes,
+        detectedBarcodes: allBarcodes,
         scanMetadata: {
-          type: 'single_image',
-          quality: qualityAssess.quality,
-          sharpness: qualityAssess.sharpness,
+          type: images.length > 1 ? 'dual_panel' : 'single_image',
+          panelCount: images.length,
         },
         frameResults: [],
         officerReview: {
@@ -536,10 +637,14 @@ export default function ScanPage() {
       setKeyDeclarations(items);
       setAnalysisProgress({ step: 4, label: 'Voice Assistant Active', progress: 100 });
 
+      const introMsg = images.length > 1
+        ? 'Dual product panels scanned. AI Voice Assistant announcing fused declarations.'
+        : 'Label scanned. AI Voice Assistant announcing key declarations.';
+
       runVoiceAssistantSequence({
         items,
         enabled: voiceEnabled && !isMuted,
-        introText: 'Label scanned. AI Voice Assistant announcing key declarations.',
+        introText: introMsg,
         onItemStart: (idx, item) => {
           setActiveVoiceIndex(idx);
           if (idx >= 0) {
@@ -566,14 +671,37 @@ export default function ScanPage() {
     }
   };
 
+  const primaryImage = images[0] || null;
+  const currentPreviewImage = images[activePreviewIndex] || primaryImage;
+
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col pb-6">
-      {/* Hidden file input */}
+      {/* Hidden file input for primary capture/upload (supports multiple) */}
       <input
         type="file"
         ref={fileInputRef}
         onChange={handleFileChange}
         accept="image/*"
+        multiple
+        className="hidden"
+      />
+
+      {/* Hidden file input for 2nd image gallery upload */}
+      <input
+        type="file"
+        ref={secondFileInputRef}
+        onChange={handleSecondFileChange}
+        accept="image/*"
+        className="hidden"
+      />
+
+      {/* Hidden file input for 2nd image camera capture */}
+      <input
+        type="file"
+        ref={secondCameraInputRef}
+        onChange={handleSecondFileChange}
+        accept="image/*"
+        capture="environment"
         className="hidden"
       />
 
@@ -659,16 +787,16 @@ export default function ScanPage() {
               className="btn-outline flex items-center justify-center gap-3 py-3.5 w-full bg-white shadow-xs font-semibold"
             >
               <Camera className="w-5 h-5 text-gray-700" />
-              Take Single Photo
+              Take Photo (Front Panel)
             </button>
 
-            {/* Image Upload */}
+            {/* Image Upload (Supports selecting up to 2 images) */}
             <button
               onClick={() => handleSelectSource('upload')}
               className="btn-outline flex items-center justify-center gap-3 py-3.5 w-full bg-white shadow-xs font-semibold"
             >
               <ImageIcon className="w-5 h-5 text-gray-700" />
-              Upload Image from Gallery
+              Upload Images (Select 1 or 2 Panels)
             </button>
 
             <div className="relative my-4 flex items-center justify-center">
@@ -697,11 +825,11 @@ export default function ScanPage() {
         </div>
       )}
 
-      {/* STEP 1.5: 15-Second Video Live Recording Viewfinder */}
+      {/* STEP 1.5: Video Live Recording Viewfinder */}
       {step === 'recording_video' && (
         <div className="flex-1 flex flex-col justify-between p-4 bg-black text-white relative overflow-hidden">
-          {/* Top Timer Bar */}
-          <div className="relative z-10 bg-black/60 backdrop-blur-md rounded-2xl p-3 border border-white/20 flex items-center justify-between">
+          {/* Top Status & Timer Bar */}
+          <div className="relative z-10 bg-black/70 backdrop-blur-md rounded-2xl px-4 py-3 border border-white/15 flex items-center justify-between">
             <div className="flex items-center gap-2.5">
               <div
                 className={`w-3 h-3 rounded-full ${
@@ -713,7 +841,7 @@ export default function ScanPage() {
                   isRecording ? 'text-rose-400' : 'text-emerald-300'
                 }`}
               >
-                {isRecording ? 'Recording 360° Label' : 'Camera Ready'}
+                {isRecording ? 'Recording Video…' : 'Camera Ready'}
               </span>
             </div>
 
@@ -743,17 +871,7 @@ export default function ScanPage() {
               className="w-full h-full object-cover"
             />
 
-            {/* Overlay Guide Box */}
-            <div className="absolute inset-8 border-2 border-dashed border-white/60 rounded-2xl pointer-events-none flex flex-col justify-between p-3">
-              <span className="text-[10px] bg-black/60 text-white px-2 py-0.5 rounded self-start">
-                Align Package Inside Frame
-              </span>
-              <span className="text-[10px] bg-black/60 text-emerald-300 px-2 py-0.5 rounded self-end">
-                {isRecording ? 'Rotate Slowly 360°' : 'Ready to Start'}
-              </span>
-            </div>
-
-            {/* Live Detected Barcode Pill Overlay (Google Lens style) */}
+            {/* Live Detected Barcode Pill Overlay */}
             {liveBarcodes.length > 0 && (
               <div className="absolute bottom-4 left-4 right-4 z-20 flex flex-col items-center gap-2 pointer-events-auto animate-fade-in">
                 {liveBarcodes.map((bc, idx) => (
@@ -785,18 +903,12 @@ export default function ScanPage() {
             )}
           </div>
 
-          {/* Bottom Guidance & Controls */}
+          {/* Start & Stop Controls */}
           <div className="relative z-10 space-y-3 pt-3">
-            <p className="text-xs text-center text-gray-300">
-              {isRecording
-                ? '🔄 Slowly rotate package to capture MRP, Use By, Net Qty & Barcode.'
-                : '📸 Hold steady and click Start Recording when ready.'}
-            </p>
-
-            <div className="grid grid-cols-2 gap-3">
+            <div className="flex items-center gap-3">
               <button
                 onClick={handleCancelVideo}
-                className="py-3 bg-white/15 hover:bg-white/25 text-white font-semibold rounded-xl text-xs border border-white/20 transition-all"
+                className="px-5 py-3.5 bg-white/15 hover:bg-white/25 text-white font-semibold rounded-2xl text-xs border border-white/20 transition-all shrink-0"
               >
                 Cancel
               </button>
@@ -804,18 +916,18 @@ export default function ScanPage() {
               {!isRecording ? (
                 <button
                   onClick={handleStartRecording}
-                  className="py-3.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/40 active:scale-[0.98] transition-all"
+                  className="flex-1 py-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold text-sm rounded-2xl flex items-center justify-center gap-2.5 shadow-xl shadow-emerald-950/50 active:scale-[0.98] transition-all"
                 >
-                  <div className="w-3 h-3 rounded-full bg-white animate-ping" />
-                  Start 15s Recording
+                  <div className="w-3.5 h-3.5 rounded-full bg-white animate-ping" />
+                  Start Recording
                 </button>
               ) : (
                 <button
                   onClick={handleStopVideoEarly}
-                  className="py-3.5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-900/40 active:scale-[0.98] transition-all"
+                  className="flex-1 py-4 bg-gradient-to-r from-rose-600 via-rose-700 to-red-600 hover:from-rose-700 hover:to-red-700 text-white font-bold text-sm rounded-2xl flex items-center justify-center gap-2.5 shadow-xl shadow-rose-950/50 active:scale-[0.98] transition-all"
                 >
                   <Square className="w-4 h-4 fill-white" />
-                  Stop & Analyze Now
+                  Stop Recording & Analyze
                 </button>
               )}
             </div>
@@ -823,18 +935,69 @@ export default function ScanPage() {
         </div>
       )}
 
-      {/* STEP 2: Preview before analyzing */}
-      {step === 'preview' && image && (
-        <div className="flex-1 flex flex-col p-6">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-base font-bold text-gray-900">High-Resolution Preview</h2>
-            <span className="text-xs text-primary-600 font-medium flex items-center gap-1">
-              <Bot className="w-3.5 h-3.5" /> Voice Assistant Ready
-            </span>
+      {/* STEP 2: Preview before analyzing (Supports 1 or 2 images) */}
+      {step === 'preview' && images.length > 0 && (
+        <div className="flex-1 flex flex-col p-5 space-y-4">
+          {/* Header with Panel Selector Tabs if 2 images */}
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-base font-bold text-gray-900 flex items-center gap-2">
+                <FileCheck className="w-4 h-4 text-primary-600" />
+                {images.length > 1 ? 'Dual Panel Inspection' : 'Label Preview'}
+              </h2>
+              <p className="text-[11px] text-gray-500">
+                {images.length > 1
+                  ? 'Both panels will be fused for 100% Rule 6 compliance'
+                  : 'Front or primary declaration panel ready'}
+              </p>
+            </div>
+
+            {images.length > 1 && (
+              <span className="bg-primary-50 text-primary-700 border border-primary-200 text-[10px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1 shadow-xs">
+                <Layers className="w-3 h-3 text-primary-600" /> 2 Images Loaded
+              </span>
+            )}
           </div>
 
-          <div className="flex-1 min-h-[300px] max-h-[440px] bg-slate-900 rounded-2xl overflow-hidden shadow-md flex items-center justify-center relative border border-slate-800">
-            <img src={image} alt="Package Label" className="max-w-full max-h-full object-contain" />
+          {/* Panel Selector Tabs (When 2 images are loaded) */}
+          {images.length > 1 && (
+            <div className="flex rounded-xl bg-gray-200/80 p-1 gap-1">
+              <button
+                onClick={() => setActivePreviewIndex(0)}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                  activePreviewIndex === 0
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <span>Panel 1 (Front / Table)</span>
+              </button>
+              <button
+                onClick={() => setActivePreviewIndex(1)}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                  activePreviewIndex === 1
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <span>Panel 2 (Back / Legal)</span>
+              </button>
+            </div>
+          )}
+
+          {/* Main Active Image Viewport */}
+          <div className="flex-1 min-h-[260px] max-h-[380px] bg-slate-900 rounded-2xl overflow-hidden shadow-md flex items-center justify-center relative border border-slate-800">
+            <img
+              src={currentPreviewImage}
+              alt={`Product Label Panel ${activePreviewIndex + 1}`}
+              className="max-w-full max-h-full object-contain"
+            />
+
+            {/* Panel Badge */}
+            <span className="absolute top-3 left-3 bg-black/70 backdrop-blur-md text-white text-[10px] font-bold px-2.5 py-1 rounded-lg border border-white/20">
+              {activePreviewIndex === 0 ? 'Panel 1: Front / Table' : 'Panel 2: Back / Declarations'}
+            </span>
+
             {isDemo && (
               <span className="absolute top-3 right-3 bg-amber-600 text-white text-[10px] font-bold px-2.5 py-1 rounded-full shadow">
                 DEMO MODE
@@ -869,21 +1032,93 @@ export default function ScanPage() {
             )}
           </div>
 
+          {/* Add 2nd Image / Dual Panel Management Card */}
+          {images.length === 1 ? (
+            <div className="card p-3.5 bg-gradient-to-r from-blue-50/60 to-indigo-50/60 border border-blue-200/80 rounded-2xl flex items-center justify-between gap-3 shadow-xs">
+              <div className="min-w-0">
+                <h4 className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                  <Plus className="w-3.5 h-3.5 text-primary-600" />
+                  Add 2nd Image (Back Panel)
+                </h4>
+                <p className="text-[10px] text-gray-500 mt-0.5 leading-tight">
+                  Capture back label for 100% manufacturer, FSSAI & consumer care details.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  onClick={() => secondCameraInputRef.current?.click()}
+                  className="px-2.5 py-2 bg-white border border-gray-200 hover:border-primary-400 text-gray-700 text-[11px] font-bold rounded-xl flex items-center gap-1 shadow-xs active:scale-95 transition-all"
+                  title="Take photo of back panel"
+                >
+                  <Camera className="w-3.5 h-3.5 text-primary-600" />
+                  Camera
+                </button>
+                <button
+                  onClick={() => secondFileInputRef.current?.click()}
+                  className="px-2.5 py-2 bg-primary-600 hover:bg-primary-700 text-white text-[11px] font-bold rounded-xl flex items-center gap-1 shadow-xs active:scale-95 transition-all"
+                  title="Upload back panel from gallery"
+                >
+                  <ImageIcon className="w-3.5 h-3.5" />
+                  Upload
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="card p-3 bg-gray-50/80 border border-gray-200 rounded-2xl flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                  <CheckCircle2 className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="font-bold text-gray-800 text-[11px] block">
+                    Dual Panel Joint Analysis Ready
+                  </span>
+                  <p className="text-[10px] text-gray-500 truncate">
+                    Panel 1 (Front) + Panel 2 (Back)
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => secondFileInputRef.current?.click()}
+                  className="px-2.5 py-1.5 bg-white border border-gray-200 text-gray-700 text-[11px] font-semibold rounded-lg hover:bg-gray-50 active:scale-95 transition-all"
+                >
+                  Replace 2nd
+                </button>
+                <button
+                  onClick={handleRemoveSecondImage}
+                  className="p-1.5 bg-rose-50 text-rose-600 border border-rose-200 hover:bg-rose-100 rounded-lg active:scale-95 transition-all"
+                  title="Remove 2nd Image"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+
           {error && (
-            <div className="mt-4 p-3 bg-rose-50 border border-rose-100 rounded-xl flex gap-3 text-rose-700 text-xs">
+            <div className="p-3 bg-rose-50 border border-rose-100 rounded-xl flex gap-3 text-rose-700 text-xs">
               <ShieldAlert className="w-4 h-4 flex-shrink-0" />
               <p>{error}</p>
             </div>
           )}
 
-          <div className="mt-6 grid grid-cols-2 gap-4">
-            <button onClick={handleRetake} className="btn-secondary py-3 flex items-center justify-center gap-2">
+          <div className="pt-2 grid grid-cols-2 gap-3.5">
+            <button
+              onClick={handleRetake}
+              className="btn-secondary py-3.5 flex items-center justify-center gap-2 text-xs font-bold"
+            >
               <RefreshCw className="w-4 h-4" />
-              Retake
+              Retake / Clear
             </button>
-            <button onClick={handleAnalyze} className="btn-primary py-3 flex items-center justify-center gap-2 shadow-md shadow-primary-500/20">
+            <button
+              onClick={handleAnalyze}
+              className="btn-primary py-3.5 flex items-center justify-center gap-2 text-xs font-bold shadow-lg shadow-primary-500/25"
+            >
               <Check className="w-4 h-4" />
-              Analyze Product
+              {images.length > 1 ? 'Analyze Both Panels' : 'Analyze Product'}
             </button>
           </div>
         </div>
@@ -906,7 +1141,11 @@ export default function ScanPage() {
                     AI Voice Compliance Assistant
                   </h2>
                   <p className="text-[11px] text-primary-200 font-medium leading-none">
-                    {scanType === 'video' ? 'Multi-Frame Legal Metrology Consensus' : 'Auditing Legal Metrology Rule 6 Declarations'}
+                    {scanType === 'video'
+                      ? 'Multi-Frame Legal Metrology Consensus'
+                      : images.length > 1
+                      ? 'Dual Panel Front & Back Declaration Fusion'
+                      : 'Auditing Legal Metrology Rule 6 Declarations'}
                   </p>
                 </div>
               </div>
@@ -1013,7 +1252,9 @@ export default function ScanPage() {
                 <div className="w-12 h-12 border-3 border-primary-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
                 <p className="text-sm font-semibold text-gray-700">{analysisProgress.label || 'Detecting declarations…'}</p>
                 <p className="text-xs text-gray-400">
-                  {scanType === 'video' ? '8-second multi-frame consensus engine' : 'Tesseract OCR + Barcode engine running in browser'}
+                  {images.length > 1
+                    ? 'Dual-panel OCR fusion running concurrently in browser'
+                    : 'Tesseract OCR + Barcode engine running in browser'}
                 </p>
               </div>
             )}

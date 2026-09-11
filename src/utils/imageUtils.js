@@ -66,6 +66,37 @@ export function rotateImage(dataUrl, degrees) {
   });
 }
 
+/**
+ * Crop center Region of Interest (ROI) where the package/label is held and upscale 2x.
+ * Greatly improves OCR accuracy on fine label text (MRP, Expiry, Mfg Date, Batch).
+ */
+export function cropCenterROI(dataUrl, scale = 2.0) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const { width, height } = img;
+      // Focus on central 65% width and 75% height
+      const cropW = Math.round(width * 0.65);
+      const cropH = Math.round(height * 0.75);
+      const cropX = Math.round((width - cropW) / 2);
+      const cropY = Math.round((height - cropH) / 2);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.min(1800, Math.round(cropW * scale));
+      canvas.height = Math.min(1800, Math.round(cropH * scale));
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+
+      ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.95));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+
 export function preprocessImage(dataUrl, contrastBoost = 1.6) {
   return new Promise((resolve) => {
     const img = new Image();

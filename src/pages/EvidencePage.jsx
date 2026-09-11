@@ -12,6 +12,8 @@ export default function EvidencePage() {
   const [focusField, setFocusField] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const [selectedImageIndex, setSelectedImageIndex] = useState(0);
+
   useEffect(() => {
     const loadData = async () => {
       try {
@@ -34,6 +36,12 @@ export default function EvidencePage() {
   if (loading) return <div className="p-4 flex justify-center text-slate-500">Loading evidence...</div>;
   if (!inspection) return <div className="p-4 flex justify-center text-red-500">Inspection not found</div>;
 
+  const allImages = inspection.extraImages?.length > 0
+    ? inspection.extraImages
+    : [inspection.productImage, ...(inspection.secondaryImage ? [inspection.secondaryImage] : [])].filter(Boolean);
+
+  const activeImage = allImages[selectedImageIndex] || inspection.productImage;
+
   return (
     <div className="max-w-md mx-auto min-h-screen bg-slate-50 pb-24">
       {/* Header */}
@@ -46,14 +54,38 @@ export default function EvidencePage() {
 
       <div className="p-4 space-y-6">
         {/* Original Product Image */}
-        <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100">
-          <h2 className="text-sm font-semibold text-slate-700 mb-2 flex items-center">
-            <Eye className="w-4 h-4 mr-1.5 text-blue-500" />
-            Analyzed Image
-          </h2>
+        <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-100 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-slate-700 flex items-center">
+              <Eye className="w-4 h-4 mr-1.5 text-blue-500" />
+              Analyzed Packaging Panels ({allImages.length || 1})
+            </h2>
+
+            {allImages.length > 1 && (
+              <div className="flex rounded-lg bg-slate-100 p-0.5 text-[11px] font-bold">
+                <button
+                  onClick={() => setSelectedImageIndex(0)}
+                  className={`px-2 py-1 rounded-md transition-all ${
+                    selectedImageIndex === 0 ? 'bg-white shadow-xs text-slate-900' : 'text-slate-500'
+                  }`}
+                >
+                  Panel 1
+                </button>
+                <button
+                  onClick={() => setSelectedImageIndex(1)}
+                  className={`px-2 py-1 rounded-md transition-all ${
+                    selectedImageIndex === 1 ? 'bg-white shadow-xs text-slate-900' : 'text-slate-500'
+                  }`}
+                >
+                  Panel 2
+                </button>
+              </div>
+            )}
+          </div>
+
           <div className="relative rounded-lg overflow-hidden bg-slate-100 aspect-square">
-            {inspection.productImage ? (
-              <img src={inspection.productImage} alt="Product evidence" className="w-full h-full object-contain" />
+            {activeImage ? (
+              <img src={activeImage} alt="Product evidence" className="w-full h-full object-contain" />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-slate-400">No image available</div>
             )}
