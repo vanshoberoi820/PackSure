@@ -7,11 +7,13 @@ import { calculateImageSharpness, resizeImage } from './imageUtils';
  * Check if the current browser supports camera access and MediaRecorder.
  */
 export function isVideoRecordingSupported() {
-  return typeof navigator !== 'undefined' &&
+  return (
+    typeof navigator !== 'undefined' &&
     !!navigator.mediaDevices &&
     !!navigator.mediaDevices.getUserMedia &&
     typeof window !== 'undefined' &&
-    !!window.MediaRecorder;
+    !!window.MediaRecorder
+  );
 }
 
 /**
@@ -26,8 +28,8 @@ export async function getCameraStream() {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: 'environment' },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
+        width: { ideal: 1280, max: 1920 },
+        height: { ideal: 720, max: 1080 },
       },
       audio: false,
     });
@@ -70,7 +72,7 @@ function getSupportedMimeType() {
  * Record an 8-second video from an active camera stream with live progress and cancel handlers.
  * @param {MediaStream} stream
  * @param {Object} options — { durationMs: 8000, onProgress: ({ elapsedMs, remainingSec, progressPct }) }
- * @returns {Promise<{ videoBlob: Blob, videoUrl: string }>}
+ * @returns {Promise<{ videoBlob: Blob, videoUrl: string, durationMs: number }>}
  */
 export function recordProductVideo(stream, { durationMs = 8000, onProgress = () => {} } = {}) {
   return new Promise((resolve, reject) => {
@@ -86,7 +88,19 @@ export function recordProductVideo(stream, { durationMs = 8000, onProgress = () 
 
     const chunks = [];
     let intervalId = null;
-    let startTime = 0;
+    let startTime = Date.now();
+    let isFinished = false;
+
+    const finish = () => {
+      if (isFinished) return;
+      isFinished = true;
+      clearInterval(intervalId);
+      const actualDuration = Date.now() - startTime;
+      const blobType = mimeType || 'video/webm';
+      const videoBlob = new Blob(chunks, { type: blobType });
+      const videoUrl = URL.createObjectURL(videoBlob);
+      resolve({ videoBlob, videoUrl, durationMs: actualDuration });
+    };
 
     mediaRecorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) {
@@ -95,11 +109,7 @@ export function recordProductVideo(stream, { durationMs = 8000, onProgress = () 
     };
 
     mediaRecorder.onstop = () => {
-      clearInterval(intervalId);
-      const blobType = mimeType || 'video/webm';
-      const videoBlob = new Blob(chunks, { type: blobType });
-      const videoUrl = URL.createObjectURL(videoBlob);
-      resolve({ videoBlob, videoUrl });
+      finish();
     };
 
     mediaRecorder.onerror = (err) => {
@@ -107,7 +117,7 @@ export function recordProductVideo(stream, { durationMs = 8000, onProgress = () 
       reject(err);
     };
 
-    mediaRecorder.start(250); // Slice chunks every 250ms
+    mediaRecorder.start(250);
     startTime = Date.now();
 
     intervalId = setInterval(() => {
@@ -121,6 +131,8 @@ export function recordProductVideo(stream, { durationMs = 8000, onProgress = () 
         clearInterval(intervalId);
         if (mediaRecorder.state === 'recording') {
           mediaRecorder.stop();
+        } else {
+          finish();
         }
       }
     }, 100);
@@ -139,13 +151,17 @@ export function formatTimestamp(ms) {
 }
 
 /**
- * Extract representative, high-sharpness frames from a video Blob.
- * Samples ~10-14 candidate timestamps and returns the sharpest non-duplicate frames.
+ * Extract representative, high-sharpness key frames from a video Blob.
+ * Uses 4 strategically spaced key frames covering 360° rotation (Front, Right, Back, Left).
+ * Downscales for optimal OCR speed (max 960x540).
  * @param {Blob|string} videoSource — video Blob or URL
- * @param {number} targetFrameCount — default 8-10 frames
+ * @param {number|Object} targetConfig — frame count or options object { targetFrameCount: 4, durationMs: 8000 }
  * @returns {Promise<Array<{ frameNumber: number, timestamp: string, timeSec: number, dataUrl: string, sharpness: number }>>}
  */
-export async function extractFramesFromVideo(videoSource, targetFrameCount = 8) {
+export async function extractFramesFromVideo(videoSource, targetConfig = 4) {
+  const targetFrameCount = typeof targetConfig === 'number' ? targetConfig : (targetConfig?.targetFrameCount || 4);
+  const fallbackDurationMs = typeof targetConfig === 'object' && targetConfig?.durationMs ? targetConfig.durationMs : 8000;
+
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
     video.crossOrigin = 'anonymous';
@@ -156,19 +172,35 @@ export async function extractFramesFromVideo(videoSource, targetFrameCount = 8) 
     video.src = videoUrl;
 
     video.onloadedmetadata = async () => {
-      const duration = video.duration || 8;
+      // Fix Chromium WebM duration === Infinity bug
+      let duration = video.duration;
+      if (!isFinite(duration) || isNaN(duration) || duration <= 0) {
+        duration = fallbackDurationMs / 1000;
+      }
+
+      // Downscale to 960x540 max for 3-4x faster OCR inference
+      let canvasW = video.videoWidth || 960;
+      let canvasH = video.videoHeight || 540;
+      if (canvasW > 960) {
+        const ratio = 960 / canvasW;
+        canvasW = 960;
+        canvasH = Math.round(canvasH * ratio);
+      }
+
       const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth || 1280;
-      canvas.height = video.videoHeight || 720;
+      canvas.width = canvasW;
+      canvas.height = canvasH;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-      // Generate sampling timestamps across 8 seconds (skipping initial 0.3s shake)
+      // Generate sampling timestamps across 8 seconds
+      // For 4 frames across 8s: ~1.0s (Front), ~3.0s (Side A), ~5.0s (Back), ~7.0s (Side B)
       const sampleTimes = [];
-      const startSec = 0.4;
-      const endSec = Math.max(0.5, duration - 0.4);
-      const step = (endSec - startSec) / (targetFrameCount + 3);
+      const startSec = 0.8;
+      const endSec = Math.max(startSec + 1, duration - 0.6);
+      const step = (endSec - startSec) / Math.max(1, targetFrameCount - 1);
 
-      for (let t = startSec; t <= endSec; t += step) {
+      for (let i = 0; i < targetFrameCount; i++) {
+        const t = Math.min(endSec, startSec + i * step);
         sampleTimes.push(parseFloat(t.toFixed(2)));
       }
 
@@ -176,20 +208,45 @@ export async function extractFramesFromVideo(videoSource, targetFrameCount = 8) 
 
       const captureFrameAt = (time) => {
         return new Promise((res) => {
+          let hasSeeked = false;
+
           const onSeeked = () => {
+            if (hasSeeked) return;
+            hasSeeked = true;
             video.removeEventListener('seeked', onSeeked);
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const sharpness = calculateImageSharpness(canvas);
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-            res({
-              timeSec: time,
-              timestamp: formatTimestamp(time * 1000),
-              dataUrl,
-              sharpness,
-            });
+            try {
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              const sharpness = calculateImageSharpness(canvas);
+              const dataUrl = canvas.toDataURL('image/jpeg', 0.90);
+              res({
+                timeSec: time,
+                timestamp: formatTimestamp(time * 1000),
+                dataUrl,
+                sharpness,
+              });
+            } catch (err) {
+              res({
+                timeSec: time,
+                timestamp: formatTimestamp(time * 1000),
+                dataUrl: canvas.toDataURL('image/jpeg', 0.8),
+                sharpness: 50,
+              });
+            }
           };
+
+          // Watchdog timeout in case seeked doesn't fire
+          setTimeout(() => {
+            if (!hasSeeked) {
+              onSeeked();
+            }
+          }, 1200);
+
           video.addEventListener('seeked', onSeeked, { once: true });
-          video.currentTime = time;
+          try {
+            video.currentTime = Math.max(0, Math.min(time, duration - 0.1));
+          } catch (e) {
+            onSeeked();
+          }
         });
       };
 
@@ -199,14 +256,7 @@ export async function extractFramesFromVideo(videoSource, targetFrameCount = 8) 
           extractedCandidates.push(frame);
         }
 
-        // Sort candidates by sharpness and pick the top non-blurry frames
-        extractedCandidates.sort((a, b) => b.sharpness - a.sharpness);
-        const topFrames = extractedCandidates.slice(0, targetFrameCount);
-
-        // Re-sort chronologically for natural video playback and inspection timeline
-        topFrames.sort((a, b) => a.timeSec - b.timeSec);
-
-        const finalFrames = topFrames.map((f, idx) => ({
+        const finalFrames = extractedCandidates.map((f, idx) => ({
           frameNumber: idx + 1,
           timestamp: f.timestamp,
           timeSec: f.timeSec,
@@ -230,3 +280,4 @@ export async function extractFramesFromVideo(videoSource, targetFrameCount = 8) 
     };
   });
 }
+

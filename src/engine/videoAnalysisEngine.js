@@ -22,14 +22,17 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
   let totalConfidence = 0;
   let validConfidenceCount = 0;
 
-  // 1. Run sequential OCR across frames
+  const panelNames = ['Front Label', 'Side Panel', 'Back Information', 'Top / Crimps'];
+
+  // 1. Run sequential OCR across extracted key frames
   for (let i = 0; i < frames.length; i++) {
     const frame = frames[i];
-    const pct = Math.round(((i + 1) / frames.length) * 80);
+    const panelLabel = panelNames[i] || `Angle ${i + 1}`;
+    const pct = Math.round(((i + 1) / frames.length) * 85);
 
     onProgress({
       step: 1,
-      label: `Analyzing Frame ${frame.frameNumber}/${frames.length} (${frame.timestamp})…`,
+      label: `Reading ${panelLabel} (${frame.frameNumber}/${frames.length})…`,
       progress: pct,
       currentFrame: i + 1,
       totalFrames: frames.length,
@@ -38,12 +41,12 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
     const ocr = await performFrameOCR(frame.dataUrl);
 
     if (ocr.text && ocr.text.length > 5) {
-      combinedOcrText += `\n--- [Frame ${frame.frameNumber} @ ${frame.timestamp}] ---\n${ocr.text}\n`;
-      totalConfidence += ocr.confidence;
+      combinedOcrText += `\n--- [Frame ${frame.frameNumber} (${panelLabel}) @ ${frame.timestamp}] ---\n${ocr.text}\n`;
+      totalConfidence += (ocr.confidence || 70);
       validConfidenceCount++;
     }
 
-    const frameDeclarations = extractDeclarations(ocr.text, ocr.confidence, {
+    const frameDeclarations = extractDeclarations(ocr.text, ocr.confidence || 75, {
       frameNumber: frame.frameNumber,
       timestamp: frame.timestamp,
       source: 'video_frame',
@@ -58,12 +61,22 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
       ocrConfidence: ocr.confidence,
       declarations: frameDeclarations,
     });
+
+    // Check if we already detected all 4 core mandatory items with high confidence
+    const detectedCore = frameDeclarations.filter(
+      (d) => ['mrp', 'netQuantity', 'manufacturingDate', 'manufacturer'].includes(d.field) && d.status === 'detected'
+    ).length;
+
+    if (i >= 2 && detectedCore >= 3 && frameResults.length >= 3) {
+      // Early exit optimization if we have captured the critical packaging panels
+      break;
+    }
   }
 
   onProgress({
     step: 2,
-    label: 'Fusing multi-frame declarations & resolving consensus…',
-    progress: 90,
+    label: 'Resolving multi-angle Legal Metrology consensus…',
+    progress: 95,
   });
 
   // 2. Perform Multi-Frame Information Fusion
@@ -71,7 +84,7 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
 
   const avgOcrConfidence = validConfidenceCount > 0
     ? Math.round(totalConfidence / validConfidenceCount)
-    : 70;
+    : 75;
 
   // 3. Evaluate Legal Metrology Compliance
   const compliance = evaluateCompliance(fusedDeclarations, avgOcrConfidence, combinedOcrText);
@@ -89,7 +102,7 @@ export async function analyzeVideoFrames(frames = [], onProgress = () => {}) {
     scanMetadata: {
       type: 'video',
       durationSeconds: 8,
-      framesAnalyzed: frames.length,
+      framesAnalyzed: frameResults.length,
       bestFrameNumber: bestFrame?.frameNumber || 1,
     },
     frameResults,

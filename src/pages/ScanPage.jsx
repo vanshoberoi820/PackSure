@@ -46,6 +46,21 @@ import {
   setVoiceMuted,
 } from '../utils/voiceAssistant';
 
+function getIconForField(fieldId) {
+  switch (fieldId) {
+    case 'mrp':
+      return Tag;
+    case 'useBy':
+      return CalendarClock;
+    case 'netWeight':
+      return Scale;
+    case 'manufactureOrigin':
+      return Building2;
+    default:
+      return Bot;
+  }
+}
+
 export default function ScanPage() {
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
@@ -226,15 +241,15 @@ export default function ScanPage() {
     const voiceEnabled = getVoiceAssistantEnabled();
 
     try {
-      setAnalysisProgress({ step: 1, label: 'Extracting representative frames…', progress: 15 });
-      setVoiceStatusText('Extracting sharp video frames…');
+      setAnalysisProgress({ step: 1, label: 'Extracting 4 key package angles…', progress: 15 });
+      setVoiceStatusText('Extracting sharp angle frames…');
 
-      const frames = await extractFramesFromVideo(blob, 8);
+      const frames = await extractFramesFromVideo(blob, { targetFrameCount: 4, durationMs: 8000 });
       if (!frames || frames.length === 0) {
         throw new Error('No clear frames could be extracted from video.');
       }
 
-      setVoiceStatusText(`Analyzing ${frames.length} frames for declarations…`);
+      setVoiceStatusText(`Analyzing ${frames.length} angles for declarations…`);
 
       const videoResult = await analyzeVideoFrames(frames, (p) => {
         setAnalysisProgress({
