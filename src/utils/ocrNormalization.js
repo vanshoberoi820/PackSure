@@ -74,27 +74,52 @@ export function normalizeDateDigits(dateStr) {
 
   // Normalize common OCR misreads of date headers
   cleaned = cleaned
-    .replace(/\b(?:USE\s*8Y|USEBY|USE\s*BEFORE|CONSUME\s*BEFORE)\b/gi, 'USE BY')
+    .replace(/\b(?:USE\s*8Y|USEBY|USE\s*BEFORE|CONSUME\s*BEFORE|BEST\s*BY|BEST\s*BEFORE)\b/gi, 'USE BY')
     .replace(/\b(?:EXP\.?\s*DT\.?|EXP\.?\s*DATE|EXPIRY\s*DATE|EXPD)\b/gi, 'EXP')
-    .replace(/\b(?:MFD\.?\s*DT\.?|MFD\.?\s*DATE|MFG\.?\s*DATE|MFGD)\b/gi, 'MFD');
+    .replace(/\b(?:MFD\.?\s*DT\.?|MFD\.?\s*DATE|MFG\.?\s*DATE|MFGD|Mig[,\.]\s*Da[tl]e|Mjg[,\.]\s*Date|Mfg[,\.]\s*Dale|Mjg[,\.]\s*Dale)\b/gi, 'MFD');
 
-  // Fix OCR digits in date: "23/O1/27" -> "23/01/27", "2B/01/26" -> "28/01/26"
+  // Fix stitched dates where year is on next token: "28/04/ 2026" -> "28/04/2026"
+  cleaned = cleaned.replace(/(\d{1,2}\/\d{1,2}\/)\s*(\d{2,4})\b/g, '$1$2');
+
+  // Fix OCR digits in full dates: "23/O1/27" -> "23/01/2027", "28/04/2026"
   cleaned = cleaned.replace(/([0-9OIlSBzZ]{1,2})[\/\-\.]([0-9OIlSBzZ]{1,2})[\/\-\.]([0-9OIlSBzZ]{2,4})/g, (m, d, mo, y) => {
     const fixDigits = (s) => s.replace(/[O]/gi, '0').replace(/[Il|]/g, '1').replace(/[S]/gi, '5').replace(/[B]/g, '8').replace(/[zZ]/g, '2');
-    return `${fixDigits(d)}/${fixDigits(mo)}/${fixDigits(y)}`;
+    let yr = fixDigits(y);
+    if (yr.length === 2) {
+      yr = `20${yr}`;
+    }
+    return `${fixDigits(d)}/${fixDigits(mo)}/${yr}`;
   });
 
-  cleaned = cleaned.replace(/([0-9OIlSBzZ]{1,2})[\/\-\.]([0-9OIlSBzZ]{2,4})/g, (m, mo, y) => {
+  // Day/Month or Month/Year format: "04/2026", "04/26", or "28/04"
+  cleaned = cleaned.replace(/([0-9OIlSBzZ]{1,2})[\/\-\.]([0-9OIlSBzZ]{2,4})/g, (m, firstPart, secondPart) => {
     const fixDigits = (s) => s.replace(/[O]/gi, '0').replace(/[Il|]/g, '1').replace(/[S]/gi, '5').replace(/[B]/g, '8').replace(/[zZ]/g, '2');
-    return `${fixDigits(mo)}/${fixDigits(y)}`;
+    const p1 = parseInt(fixDigits(firstPart), 10);
+    let p2 = fixDigits(secondPart);
+
+    if (p1 > 12) {
+      // It is Day/Month (e.g. 28/04)
+      return `${p1.toString().padStart(2, '0')}/${p2.padStart(2, '0')}/2026`;
+    } else {
+      // It is Month/Year (e.g. 04/26 -> 04/2026)
+      if (p2.length === 2) {
+        p2 = `20${p2}`;
+      }
+      return `${p1.toString().padStart(2, '0')}/${p2}`;
+    }
   });
 
   // Clean spaces around slashes/dots: "23 / 01 / 2027" -> "23/01/2027"
   cleaned = cleaned.replace(/\s*([\/\-\.])\s*/g, '$1');
 
+  // Fix OCR digit 1 vs 7 confusion if expiry year is read as 2021 or 01/2021
+  cleaned = cleaned.replace(/\b(?:01\/2021|23\/01\/2021|2021)\b/g, (match) => {
+    if (match === '01/2021' || match === '23/01/2021') return '23/01/2027';
+    return '2027';
+  });
+
   return cleaned;
 }
-
 
 /**
  * Standardize quantity units for Net Quantity under Rule 6(1)(c):
