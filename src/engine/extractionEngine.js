@@ -114,20 +114,9 @@ export function extractProductNameAndBrand(text, confMul, metadata = {}) {
     }
   }
 
-  // 2. Trademark / Brand declaration e.g. "SHAPE IS A REGISTERED TRADEMARK OF RISHABH INDUSTRIES"
-  const tmMatch = text.match(/([A-Za-z0-9\s]{2,30})\s+is\s+a\s+registered\s+trademark/i);
-  if (tmMatch) {
-    const brand = tmMatch[1].trim();
-    // Check if commodity type can be identified
-    const commodityMatch = text.match(/\b(notebook|stationery|book|diary|register|pen|pencil|paper)\b/i);
-    const combinedName = commodityMatch
-      ? `${brand} ${commodityMatch[1].charAt(0).toUpperCase() + commodityMatch[1].slice(1)}`
-      : `${brand} Product`;
-    return makeDeclaration(field, label, combinedName, 92 * confMul, 'detected', rule, tmMatch[0], metadata);
-  }
-
-  // 3. Known Commodity generic terms (Stationery, Food, Household)
+  // 2. Known Commodity generic terms (Beverage, Food, Stationery, Household)
   const genericKeywords = [
+    'Tender Coconut Water', 'Coconut Water', 'Cold Pressed Juice', 'Fruit Juice', 'Fruit Drink', 'Juice',
     'Notebook', 'Exercise Book', 'Long Book', 'Drawing Book', 'Diary', 'Register', 'Stationery',
     'Chocolate Cookies', 'Biscuits', 'Cookies', 'Bread', 'Cake', 'Atta', 'Flour', 'Rice',
     'Edible Oil', 'Mustard Oil', 'Sunflower Oil', 'Tea', 'Coffee', 'Milk', 'Butter', 'Ghee',
@@ -138,19 +127,30 @@ export function extractProductNameAndBrand(text, confMul, metadata = {}) {
   for (const kw of genericKeywords) {
     const regex = new RegExp(`\\b${kw}\\b`, 'i');
     if (regex.test(text)) {
-      // Find Brand line if any
+      // Find Brand line if any (must be valid word, not numbers or dates)
       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-      const topBrand = lines.find(l => l.length >= 2 && l.length <= 25 && !/mrp|net|mfg|lic|rs|₹|date|www/i.test(l));
-      const finalName = topBrand && !topBrand.toLowerCase().includes(kw.toLowerCase())
+      const topBrand = lines.find(l => l.length >= 2 && l.length <= 30 && !/^\d|[\d.]{2,}|mrp|net|mfg|lic|rs|₹|date|www|use by|batch|nutri|tax|incl|qty/i.test(l));
+      const finalName = topBrand && !topBrand.toLowerCase().includes(kw.toLowerCase()) && !kw.toLowerCase().includes(topBrand.toLowerCase())
         ? `${topBrand} ${kw}`
         : kw;
-      return makeDeclaration(field, label, finalName, 90 * confMul, 'detected', rule, kw, metadata);
+      return makeDeclaration(field, label, finalName, 92 * confMul, 'detected', rule, kw, metadata);
     }
+  }
+
+  // 3. Trademark / Brand declaration e.g. "SHAPE IS A REGISTERED TRADEMARK OF RISHABH INDUSTRIES"
+  const tmMatch = text.match(/([A-Za-z0-9\s]{2,30})\s+is\s+a\s+registered\s+trademark/i);
+  if (tmMatch) {
+    const brand = tmMatch[1].trim();
+    const commodityMatch = text.match(/\b(notebook|stationery|book|diary|register|pen|pencil|paper)\b/i);
+    const combinedName = commodityMatch
+      ? `${brand} ${commodityMatch[1].charAt(0).toUpperCase() + commodityMatch[1].slice(1)}`
+      : `${brand} Product`;
+    return makeDeclaration(field, label, combinedName, 92 * confMul, 'detected', rule, tmMatch[0], metadata);
   }
 
   // 4. Fallback line candidate scoring
   const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length > 2);
-  const skipPattern = /^(mrp|net|mfg|mfd|best|exp|batch|fssai|lic|made|product of|country|import|pack|manufact|ingredient|nutrition|energy|protein|fat|carb|sugar|storage|allergen|serving|scan|visit|customer|care|tel|call|toll|www|\d+$)/i;
+  const skipPattern = /^(mrp|net|mfg|mfd|best|exp|batch|fssai|lic|made|product of|country|import|pack|manufact|ingredient|nutrition|energy|protein|fat|carb|sugar|storage|allergen|serving|scan|visit|customer|care|tel|call|toll|www|use by|use before|see sleeve|see back|\d+$)/i;
 
   const scoredCandidates = [];
 
@@ -189,9 +189,8 @@ export function extractManufacturer(text, confMul, metadata = {}) {
   const rule = 'Rule 6(1)(a)';
 
   const patterns = [
-    /(?:marketed\s*&\s*manufactured\s*(?:by)?|manufactured\s*&\s*marketed\s*(?:by)?|mkt\s*&\s*mfg\s*(?:by)?)\s*[:\-]?\s*([\s\S]{5,220}?)(?=\n\s*(?:size|total\s*pages|pages|pkg|pack|mfg|exp|batch|fssai|net|mrp|country|storage|ingredient|plant|go green|scan|$))/i,
-    /(?:manufactur(?:ed|er|ing)\s*(?:by|&\s*(?:market|pack|pkd))?|mfg\.?\s*(?:by)?|mfd\.?\s*(?:by)?)\s*[:\-]?\s*([\s\S]{5,200}?)(?=\n\s*(?:size|total\s*pages|pkg|pack|market|mfg|exp|batch|fssai|net|mrp|country|storage|ingredient|go green|$))/i,
-    /(?:marketed\s*(?:by|&))\s*[:\-]?\s*([\s\S]{5,180}?)(?=\n\s*(?:size|pkg|pack|mfg|exp|batch|fssai|net|mrp|$))/i,
+    /(?:marketed\s*&\s*manufactured\s*(?:by)?|manufactured\s*&\s*marketed\s*(?:by)?|mkt\s*&\s*mfg\s*(?:by)?)\s*[:\-]?\s*([\s\S]{5,220}?)(?=(?:\n\s*(?:size|total\s*pages|pages|pkg|pack|mfg\s*date|exp|batch|fssai|net|mrp|country|storage|ingredient|plant|go green|scan))|$)/i,
+    /(?:manufactured\s*by|marketed\s*by|mfg\.?\s*by|mfd\.?\s*by|manufactured\s*and\s*packed\s*by)\s*[:\-]?\s*([\s\S]{5,200}?)(?=(?:\n\s*(?:size|total\s*pages|pkg|pack|mfg\s*date|exp|batch|fssai|net|mrp|country|storage|ingredient|go green))|$)/i,
   ];
 
   for (const pat of patterns) {
@@ -199,7 +198,7 @@ export function extractManufacturer(text, confMul, metadata = {}) {
     if (m) {
       let val = m[1].replace(/\n+/g, ', ').replace(/\s{2,}/g, ' ').trim();
       val = val.replace(/[,;\-_.]+$/, '').trim();
-      if (val.length >= 4) {
+      if (val.length >= 4 && !/^\s*date\s*[:\-]/i.test(val)) {
         return makeDeclaration(field, label, val, 95 * confMul, 'detected', rule, m[0].slice(0, 120), metadata);
       }
     }
@@ -224,7 +223,7 @@ export function extractPacker(text, confMul, metadata = {}) {
   const rule = 'Rule 6(1)(a)';
 
   const m = text.match(
-    /(?:pack(?:ed|er|ing|aged)\s*(?:by|&\s*\w+)?|pkd\.?\s*by)\s*[:\-]?\s*([\s\S]{5,180}?)(?=\n\s*(?:mfg|exp|batch|fssai|net|mrp|country|$))/i
+    /(?:pack(?:ed|er|ing|aged)\s*by|pkd\.?\s*by)\s*[:\-]?\s*([\s\S]{5,180}?)(?=\n\s*(?:mfg|exp|batch|fssai|net|mrp|country|$))/i
   );
   if (m) {
     let val = m[1].replace(/\n+/g, ', ').replace(/\s{2,}/g, ' ').trim();
@@ -246,7 +245,7 @@ export function extractImporter(text, confMul, metadata = {}) {
   const rule = 'Rule 6(1)(a)';
 
   const m = text.match(
-    /(?:import(?:ed|er|ing)\s*(?:by|&\s*\w+)?)\s*[:\-]?\s*([\s\S]{5,180}?)(?=\n\s*(?:mfg|exp|batch|fssai|net|mrp|$))/i
+    /(?:import(?:ed|er|ing)\s*by)\s*[:\-]?\s*([\s\S]{5,180}?)(?=\n\s*(?:mfg|exp|batch|fssai|net|mrp|$))/i
   );
   if (m) {
     let val = m[1].replace(/\n+/g, ', ').replace(/\s{2,}/g, ' ').trim();
@@ -283,17 +282,7 @@ export function extractNetQuantity(text, confMul, metadata = {}) {
     return makeDeclaration(field, label, formatted, 95 * confMul, 'detected', rule, pagesMatch[0], metadata);
   }
 
-  // 2. Count / Number format: "1 N", "10 Units", "1 Pc", "100 Numbers"
-  const countMatch = text.match(
-    /(?:net\s*(?:qty|quantity|count|number)?|quantity|qty|contents?)\s*[:\-]?\s*([0-9OIlSBzZ]+\s*(?:n|u|units?|pcs?|pieces?|nos?|numbers?|count))\b/i
-  );
-  if (countMatch) {
-    const norm = normalizeMetricQuantity(countMatch[1]);
-    const sizePart = sizeMatch ? ` (${sizeMatch[1].trim()})` : '';
-    return makeDeclaration(field, label, `${norm}${sizePart}`, 92 * confMul, 'detected', rule, countMatch[0], metadata);
-  }
-
-  // 3. Weight / Volume: "Net Wt. 500 g", "Net Quantity: 1 L", "750 ml"
+  // 2. Weight / Volume: "Net Qty. : 1.01L", "Net Wt. 500 g", "Net Quantity: 1 L", "750 ml"
   const patterns = [
     /(?:net\s*(?:wt|weight|qty|quantity|content|vol|volume|mass)|contents?|netto)[\s\S]{0,30}?[:\-]?\s*([0-9OIlSBzZ.,]+\s*(?:g|gm|gms|gram|grams|kg|kgs|kilogram|ml|mL|l|ltr|litre|liter|cm|mm|m|pieces?|pcs?|units?|nos?|n)\b)/i,
     /([\d.,]+\s*(?:g|gm|kg|ml|l|ltr)\b)\s*(?:net|e\b)/i,
@@ -306,6 +295,16 @@ export function extractNetQuantity(text, confMul, metadata = {}) {
       let normalized = normalizeMetricQuantity(rawQty);
       return makeDeclaration(field, label, normalized, 95 * confMul, 'detected', rule, m[0], metadata);
     }
+  }
+
+  // 3. Count / Number format: "1 N", "10 Units", "1 Pc", "100 Numbers"
+  const countMatch = text.match(
+    /(?:net\s*(?:qty|quantity|count|number)?|quantity|qty|contents?)\s*[:\-]?\s*([0-9OIlSBzZ]+\s*(?:n|u|units?|pcs?|pieces?|nos?|numbers?|count))\b/i
+  );
+  if (countMatch) {
+    const norm = normalizeMetricQuantity(countMatch[1]);
+    const sizePart = sizeMatch ? ` (${sizeMatch[1].trim()})` : '';
+    return makeDeclaration(field, label, `${norm}${sizePart}`, 92 * confMul, 'detected', rule, countMatch[0], metadata);
   }
 
   // 4. Standalone Dimensions / Size as quantity indicator
@@ -328,10 +327,10 @@ export function extractMRP(text, confMul, metadata = {}) {
   const normalizedPriceText = normalizePriceString(text);
 
   const patterns = [
-    /MRP[^\d\n]{0,30}(?:Rs\.?|₹|INR)?\s*[:\-.]?\s*([0-9]+(?:\.[0-9]{1,2})?)/i,
-    /(?:maximum\s*retail\s*price|max\.?\s*retail\s*price)[^\d\n]{0,30}(?:Rs\.?|₹|INR)?\s*[:\-.]?\s*([0-9]+(?:\.[0-9]{1,2})?)/i,
+    /MRP[\s\S]{0,60}?(?:Rs\.?|₹|INR)?\s*[:\-.]?\s*(?:\(?[^0-9\n]{0,30}\)?\s*)?([0-9]+(?:\.[0-9]{1,2})?)/i,
+    /(?:maximum\s*retail\s*price|max\.?\s*retail\s*price)[\s\S]{0,60}?(?:Rs\.?|₹|INR)?\s*[:\-.]?\s*([0-9]+(?:\.[0-9]{1,2})?)/i,
     /(?:Rs\.?|₹)\s*([0-9]+(?:\.[0-9]{1,2})?)\s*(?:\/\-|only|\(incl|incl|\n|$)/i,
-    /M\.?\s*R\.?\s*P\.?\s*[:\-.]?\s*(?:Rs\.?|₹)?\s*([0-9]+(?:\.[0-9]{1,2})?)/i,
+    /M\.?\s*R\.?\s*P\.?[\s\S]{0,40}?(?:Rs\.?|₹)?\s*([0-9]+(?:\.[0-9]{1,2})?)/i,
   ];
 
   for (const pat of patterns) {
@@ -341,7 +340,7 @@ export function extractMRP(text, confMul, metadata = {}) {
       const price = parseFloat(cleanNum);
 
       if (!isNaN(price) && price > 0 && price < 100000 && cleanNum.length <= 8) {
-        const hasTax = /incl|tax|all\s*taxes/i.test(text.slice(Math.max(0, m.index - 30), m.index + 80));
+        const hasTax = /incl|tax|all\s*taxes/i.test(text.slice(Math.max(0, m.index - 30), m.index + 90));
         const taxSuffix = hasTax ? ' (Incl. of all taxes)' : '';
         const formatted = `Rs. ${price.toFixed(2)}${taxSuffix}`;
         return makeDeclaration(field, label, formatted, 95 * confMul, 'detected', rule, m[0], metadata);

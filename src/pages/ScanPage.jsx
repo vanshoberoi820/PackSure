@@ -47,6 +47,7 @@ import {
   stopSpeech,
   setVoiceMuted,
 } from '../utils/voiceAssistant';
+import { uploadImageToS3 } from '../utils/s3Upload';
 
 function getIconForField(fieldId) {
   switch (fieldId) {
@@ -307,9 +308,17 @@ export default function ScanPage() {
         ? videoResult.detectedBarcodes
         : liveBarcodes;
 
+      let videoImageUrl = videoResult.productImage;
+      if (videoImageUrl) {
+        try {
+          const s3Url = await uploadImageToS3(videoImageUrl, `${inspectionId}-video`);
+          if (s3Url) videoImageUrl = s3Url;
+        } catch (_) {}
+      }
+
       const newInspection = {
         id: inspectionId,
-        productImage: videoResult.productImage,
+        productImage: videoImageUrl,
         productName: videoResult.productName,
         ocrText: videoResult.ocrText,
         ocrConfidence: videoResult.ocrConfidence,
@@ -457,9 +466,17 @@ export default function ScanPage() {
       setAnalysisProgress({ step: 4, label: 'Legal Metrology compliance check…', progress: 90 });
       const compliance = evaluateCompliance(declarations, ocrResult.confidence, ocrResult.text);
 
+      let finalImageUrl = image;
+      if (image) {
+        try {
+          const s3Url = await uploadImageToS3(image, inspectionId);
+          if (s3Url) finalImageUrl = s3Url;
+        } catch (_) {}
+      }
+
       const newInspection = {
         id: inspectionId,
-        productImage: image,
+        productImage: finalImageUrl,
         productName: declarations.find((d) => d.field === 'productName')?.value || 'Unknown Product',
         ocrText: ocrResult.text,
         ocrConfidence: ocrResult.confidence,
