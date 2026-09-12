@@ -15,7 +15,7 @@ export const LEGAL_METROLOGY_RULES = [
   {
     field: 'manufacturer',
     rule: 'Rule 6(1)(a)',
-    ruleName: 'Manufacturer / Packer Identity & Address',
+    ruleName: 'Manufacturer / Packer Identity & Address / Manufacturer and Packed by /Manufacturer & Packed by',
     requirement: 'Name and complete address of the manufacturer, packer, or importer.',
     weight: 15,
     severity: 'high',
