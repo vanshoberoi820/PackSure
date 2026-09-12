@@ -10,6 +10,12 @@ import {
   normalizeFSSAILicense,
 } from '../utils/ocrNormalization.js';
 import { getCountryFromGS1Barcode } from './barcodeEngine.js';
+import {
+  matchSynonymScore,
+  findBestFieldForPhrase,
+  auditTextWithSynonyms,
+  STATUTORY_SYNONYMS,
+} from './synonymEngine.js';
 
 export function extractDeclarations(rawOcrText, ocrConfidence = 75, metadata = {}) {
   const detectedBarcodes = metadata.detectedBarcodes || [];
@@ -41,7 +47,7 @@ export function extractDeclarations(rawOcrText, ocrConfidence = 75, metadata = {
   const text = normalizeOCRText(rawOcrText);
   const confMultiplier = Math.max(0.6, Math.min(1.0, (ocrConfidence || 75) / 100));
 
-  return [
+  const declarations = [
     extractProductNameAndBrand(text, confMultiplier, metadata),
     extractManufacturer(text, confMultiplier, metadata),
     extractPacker(text, confMultiplier, metadata),
@@ -56,6 +62,41 @@ export function extractDeclarations(rawOcrText, ocrConfidence = 75, metadata = {
     extractFSSAILicense(text, confMultiplier, metadata),
     extractBatchNumber(text, confMultiplier, metadata),
   ];
+
+  // Disambiguate duplicate dates: Prevent exact same future date on both MFG & Expiry
+  const mfgIdx = declarations.findIndex((d) => d.field === 'manufacturingDate');
+  const expIdx = declarations.findIndex((d) => d.field === 'bestBefore');
+
+  if (mfgIdx >= 0 && expIdx >= 0) {
+    const mfgVal = declarations[mfgIdx].value;
+    const expVal = declarations[expIdx].value;
+
+    if (mfgVal && expVal && mfgVal.trim().toLowerCase() === expVal.trim().toLowerCase()) {
+      const isFuture = /\b202[7-9]\b|\b203\d\b/.test(mfgVal);
+      if (isFuture) {
+        // Future date belongs only to Best Before / Expiry Date
+        declarations[mfgIdx] = notDetected('manufacturingDate', 'Manufacturing / Packing Date', 'Rule 6(1)(d)', metadata);
+      } else {
+        // Past date belongs only to Manufacturing Date
+        declarations[expIdx] = notDetected('bestBefore', 'Best Before / Expiry Date', 'Rule 6(1)(d) proviso', metadata);
+      }
+    } else if (mfgVal && !expVal && /\b202[7-9]\b|\b203\d\b/.test(mfgVal)) {
+      // Future date misassigned to MFG -> move to Expiry
+      declarations[expIdx] = makeDeclaration(
+        'bestBefore',
+        'Best Before / Expiry Date',
+        mfgVal,
+        declarations[mfgIdx].confidence,
+        'detected',
+        'Rule 6(1)(d) proviso',
+        declarations[mfgIdx].evidence,
+        metadata
+      );
+      declarations[mfgIdx] = notDetected('manufacturingDate', 'Manufacturing / Packing Date', 'Rule 6(1)(d)', metadata);
+    }
+  }
+
+  return declarations;
 }
 
 function makeDeclaration(field, label, value, confidence, status, rule, evidence = '', metadata = {}) {
@@ -206,8 +247,10 @@ export function extractManufacturer(text, confMul, metadata = {}) {
   const rule = 'Rule 6(1)(a)';
 
   const patterns = [
-    /(?:brand\s*owned\s*and\s*marketed\s*by|marketed\s*&\s*manufactured\s*(?:by)?|manufactured\s*&\s*marketed\s*(?:by)?|mkt\s*&\s*mfg\s*(?:by)?)\s*[:\-]?\s*([\s\S]{5,220}?)(?=(?:\n\s*(?:fssai|lic|size|total\s*pages|pages|pkg|pack|mfg\s*date|exp|batch|net|mrp|country|storage|ingredient|plant|go green|scan))|$)/i,
-    /(?:manufactured\s*(?:and|&)\s*packed\s*at|manufactured\s*by|marketed\s*by|mfg\.?\s*by|mfd\.?\s*by|packed\s*at)\s*[:\-]?\s*([\s\S]{5,200}?)(?=(?:\n\s*(?:fssai|lic|size|total\s*pages|pkg|pack|mfg\s*date|exp|batch|net|mrp|country|storage|ingredient|go green))|$)/i,
+    // Multi-role & Brand declarations:
+    /(?:brand\s*owned\s*(?:and|&)\s*marketed\s*by|marketed\s*(?:and|&)\s*manufactured\s*(?:by)?|manufactured\s*(?:and|&)\s*(?:marketed|packed)\s*(?:by|at)?|mkt\s*&\s*mfg\s*(?:by)?|mfg\s*(?:and|&)\s*pkd\s*(?:by|at)?|mfd\s*(?:and|&)\s*pkd\s*(?:by|at)?|manufacturer\s*(?:and|&)\s*packed\s*by)\s*[:\-]?\s*([\s\S]{5,220}?)(?=(?:\n\s*(?:fssai|lic|size|total\s*pages|pages|pkg|pack|mfg\s*date|exp|batch|net|mrp|country|storage|ingredient|plant|go green|scan))|$)/i,
+    // Standard manufacturer / synonym variations (mf by, mfg by, mfd by, manufacturer by, manufactured by, etc.):
+    /(?:manufactured\s*(?:and|&)\s*packed\s*at|manufactured\s*by|manufacturer\s*by|marketed\s*by|mfg\.?\s*by|mfd\.?\s*by|mf\.?\s*by|mkt\.?\s*by|mktd\.?\s*by|mktg\.?\s*by|produced\s*by|processed\s*by|bottled\s*by|packed\s*at)\s*[:\-]?\s*([\s\S]{5,200}?)(?=(?:\n\s*(?:fssai|lic|size|total\s*pages|pkg|pack|mfg\s*date|exp|batch|net|mrp|country|storage|ingredient|go green))|$)/i,
   ];
 
   for (const pat of patterns) {
@@ -246,6 +289,20 @@ export function extractManufacturer(text, confMul, metadata = {}) {
     return makeDeclaration(field, label, val, 85 * confMul, 'detected', rule, tm[0], metadata);
   }
 
+  // Fallback: Line-by-line statutory synonym matching for OCR text
+  const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length >= 4);
+  for (const line of lines) {
+    const synScore = matchSynonymScore(line, 'manufacturer');
+    if (synScore.isMatch && synScore.score >= 80) {
+      const cleanedVal = line
+        .replace(/^(?:manufactured\s*by|manufacturer\s*by|mfg\.?\s*by|mfd\.?\s*by|mf\.?\s*by|marketed\s*by|brand\s*owned\s*and\s*marketed\s*by)\s*[:\-]?\s*/i, '')
+        .trim();
+      if (cleanedVal.length >= 4) {
+        return makeDeclaration(field, label, cleanedVal, Math.round(synScore.score * confMul), 'detected', rule, line, metadata);
+      }
+    }
+  }
+
   return notDetected(field, label, rule, metadata);
 }
 
@@ -258,7 +315,7 @@ export function extractPacker(text, confMul, metadata = {}) {
   const rule = 'Rule 6(1)(a)';
 
   const m = text.match(
-    /(?:pack(?:ed|er|ing|aged)\s*(?:by|at)|pkd\.?\s*by|picked\s*at)\s*[:\-]?\s*([\s\S]{5,180}?)(?=\n\s*(?:mfg|exp|batch|fssai|net|mrp|country|$))/i
+    /(?:pack(?:ed|er|ing|aged)\s*(?:by|at)|packer\s*by|pkd\.?\s*by|pkg\.?\s*by|picked\s*at|re-?packed\s*by|unit\s*packed\s*by)\s*[:\-]?\s*([\s\S]{5,180}?)(?=\n\s*(?:mfg|exp|batch|fssai|net|mrp|country|$))/i
   );
   if (m) {
     let val = m[1].replace(/\n+/g, ', ').replace(/\s{2,}/g, ' ').trim();
@@ -273,6 +330,20 @@ export function extractPacker(text, confMul, metadata = {}) {
     return makeDeclaration(field, label, val, 90 * confMul, 'detected', rule, 'Drytech Processes (I) Pvt. Ltd.', metadata);
   }
 
+  // Line-by-line fallback synonym matching
+  const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length >= 4);
+  for (const line of lines) {
+    const synScore = matchSynonymScore(line, 'packer');
+    if (synScore.isMatch && synScore.score >= 80) {
+      const cleanedVal = line
+        .replace(/^(?:packed\s*by|packer\s*by|pkd\.?\s*by|pkg\.?\s*by|re-?packed\s*by)\s*[:\-]?\s*/i, '')
+        .trim();
+      if (cleanedVal.length >= 4) {
+        return makeDeclaration(field, label, cleanedVal, Math.round(synScore.score * confMul), 'detected', rule, line, metadata);
+      }
+    }
+  }
+
   return notDetected(field, label, rule, metadata);
 }
 
@@ -285,7 +356,7 @@ export function extractImporter(text, confMul, metadata = {}) {
   const rule = 'Rule 6(1)(a)';
 
   const m = text.match(
-    /(?:import(?:ed|er|ing)\s*by)\s*[:\-]?\s*([\s\S]{5,180}?)(?=\n\s*(?:mfg|exp|batch|fssai|net|mrp|$))/i
+    /(?:import(?:ed|er|ing)\s*(?:by|in\s*india\s*by)|imp\.?\s*by|imported\s*&\s*distributed\s*by)\s*[:\-]?\s*([\s\S]{5,180}?)(?=\n\s*(?:mfg|exp|batch|fssai|net|mrp|$))/i
   );
   if (m) {
     let val = m[1].replace(/\n+/g, ', ').replace(/\s{2,}/g, ' ').trim();

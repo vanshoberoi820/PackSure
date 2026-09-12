@@ -1,7 +1,22 @@
-/* ─────────────────────────────────────────────
-   Compliance Engine — Legal Metrology (Packaged Commodities) Rules, 2011
-   Rule 6 Statutory Compliance Assessment with weight/measure/number evaluation
-   ───────────────────────────────────────────── */
+import {
+  matchSynonymScore,
+  findBestFieldForPhrase,
+  auditTextWithSynonyms,
+  compareWithSynonymsAI,
+  STATUTORY_SYNONYMS,
+  normalizePhrase,
+  calculateStringSimilarity,
+} from './synonymEngine.js';
+
+export {
+  matchSynonymScore,
+  findBestFieldForPhrase,
+  auditTextWithSynonyms,
+  compareWithSynonymsAI,
+  STATUTORY_SYNONYMS,
+  normalizePhrase,
+  calculateStringSimilarity,
+};
 
 export const LEGAL_METROLOGY_RULES = [
   {
@@ -15,7 +30,7 @@ export const LEGAL_METROLOGY_RULES = [
   {
     field: 'manufacturer',
     rule: 'Rule 6(1)(a)',
-    ruleName: 'Manufacturer / Packer Identity & Address / Manufacturer and Packed by /Manufacturer & Packed by',
+    ruleName: 'Manufacturer / Packer Identity & Address (incl. Mfd By, Packed By, Mkt By)',
     requirement: 'Name and complete address of the manufacturer, packer, or importer.',
     weight: 15,
     severity: 'high',
@@ -259,8 +274,48 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
 
   const isApplicable = commodityInfo ? commodityInfo.isExpiryApplicable : true;
 
-  if (mfgDecl && mfgDecl.value && mfgDecl.status !== 'not_detected') {
-    mfgParsed = parseDateString(mfgDecl.value);
+  // 1. DATE DISAMBIGUATION: Prevent duplicate same dates and misassigned future dates
+  let effectiveMfgVal = mfgDecl && mfgDecl.value && mfgDecl.status !== 'not_detected' ? mfgDecl.value : null;
+  let effectiveExpVal = expDecl && expDecl.value && expDecl.status !== 'not_detected' && expDecl.status !== 'not_applicable' ? expDecl.value : null;
+
+  if (effectiveMfgVal && effectiveExpVal && effectiveMfgVal.trim().toLowerCase() === effectiveExpVal.trim().toLowerCase()) {
+    const parsedSame = parseDateString(effectiveMfgVal);
+    if (parsedSame && parsedSame.isValid) {
+      if (parsedSame.date > referenceDate) {
+        // Future date (e.g. 23/01/2027) -> belongs ONLY to Use By / Expiry Date!
+        effectiveMfgVal = null;
+        if (mfgDecl) {
+          mfgDecl.value = null;
+          mfgDecl.status = 'not_detected';
+        }
+      } else {
+        // Past date -> belongs ONLY to Manufacturing Date!
+        effectiveExpVal = null;
+        if (expDecl) {
+          expDecl.value = null;
+          expDecl.status = 'not_detected';
+        }
+      }
+    }
+  } else if (effectiveMfgVal && !effectiveExpVal) {
+    // If only MFG date is captured but it is in the future (> 15 days), it represents the Use By / Expiry date!
+    const parsedM = parseDateString(effectiveMfgVal);
+    if (parsedM && parsedM.isValid && parsedM.date > new Date(referenceDate.getTime() + 15 * 24 * 60 * 60 * 1000)) {
+      effectiveExpVal = effectiveMfgVal;
+      effectiveMfgVal = null;
+      if (expDecl) {
+        expDecl.value = effectiveExpVal;
+        expDecl.status = 'detected';
+      }
+      if (mfgDecl) {
+        mfgDecl.value = null;
+        mfgDecl.status = 'not_detected';
+      }
+    }
+  }
+
+  if (effectiveMfgVal) {
+    mfgParsed = parseDateString(effectiveMfgVal);
 
     if (mfgParsed && mfgParsed.isValid) {
       const bufferDate = new Date(referenceDate.getTime() + 3 * 24 * 60 * 60 * 1000);
@@ -274,7 +329,7 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
           severity: 'high',
           status: 'future_dated',
           requirement: 'Manufacturing date must represent the actual or past packing date.',
-          message: `Manufacturing date (${mfgDecl.value}) is post-dated relative to audit date. Post-dating package labels is an offense under Legal Metrology Rule 6(1)(d).`,
+          message: `Manufacturing date (${effectiveMfgVal}) is post-dated relative to audit date. Post-dating package labels is an offense under Legal Metrology Rule 6(1)(d).`,
           recommendation: 'Issue notice to manufacturer for post-dated packaging inquiry.',
           confidence: 94,
         });
@@ -282,15 +337,15 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
     }
   }
 
-  const hasExpValue = expDecl && expDecl.value && expDecl.status !== 'not_detected' && expDecl.status !== 'not_applicable';
+  const hasExpValue = !!effectiveExpVal;
 
   if (!isApplicable && !hasExpValue) {
     expiryStatus = 'not_applicable';
   } else if (hasExpValue) {
-    const shelfLife = parseShelfLifeDuration(expDecl.value);
+    const shelfLife = parseShelfLifeDuration(effectiveExpVal);
 
     if (shelfLife && mfgParsed && mfgParsed.isValid) {
-      shelfLifeText = expDecl.value;
+      shelfLifeText = effectiveExpVal;
       const expDate = new Date(mfgParsed.date.getTime());
       if (shelfLife.type === 'days') {
         expDate.setDate(expDate.getDate() + shelfLife.value);
@@ -303,7 +358,7 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
         isComputed: true,
       };
     } else {
-      const directExpParsed = parseDateString(expDecl.value);
+      const directExpParsed = parseDateString(effectiveExpVal);
       if (directExpParsed && directExpParsed.isValid) {
         computedExpiry = {
           date: directExpParsed.date,
@@ -354,8 +409,8 @@ export function evaluateDateCompliance(mfgDecl, expDecl, referenceDate = new Dat
   }
 
   return {
-    mfgDate: mfgParsed && mfgParsed.isValid ? formatDateDisplay(mfgParsed.date, mfgParsed.hasDay) : mfgDecl?.value || null,
-    expiryDate: computedExpiry ? computedExpiry.formatted : null,
+    mfgDate: mfgParsed && mfgParsed.isValid ? formatDateDisplay(mfgParsed.date, mfgParsed.hasDay) : effectiveMfgVal || null,
+    expiryDate: computedExpiry ? computedExpiry.formatted : effectiveExpVal || null,
     expiryDateObj: computedExpiry ? computedExpiry.date.toISOString() : null,
     isComputedExpiry: computedExpiry ? computedExpiry.isComputed : false,
     shelfLife: shelfLifeText,

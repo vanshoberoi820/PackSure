@@ -7,6 +7,7 @@ import { evaluateDateCompliance } from '../engine/complianceEngine';
 import ScoreCircle from '../components/ScoreCircle';
 import DeclarationCard from '../components/DeclarationCard';
 import StatusBadge from '../components/StatusBadge';
+import SynonymTrialAuditor from '../components/SynonymTrialAuditor';
 
 export default function ResultPage() {
   const { id } = useParams();
@@ -261,6 +262,12 @@ export default function ResultPage() {
             </div>
           );
         })()}
+
+        {/* Statutory Word & Synonym Trial Auditor Model */}
+        <SynonymTrialAuditor
+          declarations={declarations}
+          rawOcrText={inspection.rawOcrText || ''}
+        />
 
         {/* Detected Declarations */}
         <div className="space-y-3">

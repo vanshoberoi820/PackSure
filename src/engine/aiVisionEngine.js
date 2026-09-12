@@ -3,6 +3,14 @@
    Direct multimodal vision analysis via OpenRouter (GPT-4o-mini Vision)
    ───────────────────────────────────────────── */
 
+export {
+  matchSynonymScore,
+  findBestFieldForPhrase,
+  auditTextWithSynonyms,
+  compareWithSynonymsAI,
+  STATUTORY_SYNONYMS,
+} from './synonymEngine.js';
+
 const OPENROUTER_API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY || '';
 
 /**
@@ -42,18 +50,18 @@ Return ONLY a valid JSON object matching this schema:
 {
   "productName": "Generic or common name of commodity (e.g. Tender Coconut Water, Exercise Notebook)",
   "brandName": "Brand name (e.g. Storia, Classmate, Paperkraft)",
-  "manufacturer": "Name and complete address of the manufacturer / brand owned and marketed by",
-  "packer": "Name and address of packer if separate, else manufacturer",
-  "importer": "Name and address of importer if imported commodity, else null",
-  "netQuantity": "Net quantity in standard metric units (e.g. 1.01 L, 500 g, 288 Pages (with cover))",
-  "mrp": "Maximum retail price formatted as Rs. XX.XX (Incl. of all taxes) or Rs. XX",
-  "manufacturingDate": "Manufacturing / Packing date (DD/MM/YYYY or MM/YYYY: e.g. 28/04/2026)",
-  "bestBefore": "Best before / Expiry date or shelf life duration (e.g. 23/01/2027 or 9 months from manufacture)",
-  "countryOfOrigin": "Country of origin (e.g. India)",
-  "consumerCare": "Consumer care details including email, helpline phone number, address, website",
-  "unitSalePrice": "Unit sale price per g/kg/ml/l/unit if declared (e.g. Rs. 0.18 per ml)",
+  "manufacturer": "Name and complete address of the manufacturer / brand owned and marketed by (handles synonyms: 'mf by', 'mfg by', 'mfd by', 'manufacturer by', 'manufactured & packed by', 'mkt by')",
+  "packer": "Name and address of packer if separate (handles synonyms: 'pkd by', 'packed by', 'packer by', 'pkg by')",
+  "importer": "Name and address of importer if imported commodity (handles synonyms: 'imported by', 'imp by'), else null",
+  "netQuantity": "Net quantity in standard metric units (e.g. 1.01 L, 500 g, 288 Pages (with cover)) (handles: 'net wt', 'net qty', 'net contents', 'net volume')",
+  "mrp": "Maximum retail price formatted as Rs. XX.XX (Incl. of all taxes) or Rs. XX (handles: 'mrp', 'max retail price', 'm.r.p.')",
+  "manufacturingDate": "Manufacturing / Packing date (DD/MM/YYYY or MM/YYYY: e.g. 28/04/2026) (handles: 'mfg dt', 'mfd on', 'pkd date', 'dom')",
+  "bestBefore": "Best before / Expiry date or shelf life duration (e.g. 23/01/2027 or 9 months from manufacture) (handles: 'use by', 'exp date', 'expiry', 'consume within')",
+  "countryOfOrigin": "Country of origin (e.g. India) (handles: 'made in', 'product of', 'origin')",
+  "consumerCare": "Consumer care details including email, helpline phone number, address, website (handles: 'customer care', 'feedback', 'toll free')",
+  "unitSalePrice": "Unit sale price per g/kg/ml/l/unit if declared (e.g. Rs. 0.18 per ml) (handles: 'usp', 'unit price')",
   "fssaiLicense": "14-digit FSSAI license number if applicable, else null",
-  "batchNumber": "Batch / Lot / B.No code (e.g. T64611803)",
+  "batchNumber": "Batch / Lot / B.No code (e.g. T64611803) (handles: 'batch no', 'lot no', 'b.no')",
   "rawText": "Complete transcription of all text visible on the packaging"
 }`;
 
@@ -137,6 +145,43 @@ Return ONLY a valid JSON object matching this schema:
     if (ean) countryVal = ean.country;
   }
 
+  // Prevent duplicate same dates and misassigned future dates
+  let mfgVal = parsed.manufacturingDate;
+  let expVal = parsed.bestBefore;
+
+  if (mfgVal && expVal && String(mfgVal).trim().toLowerCase() === String(expVal).trim().toLowerCase()) {
+    // Check if the single date is in the future
+    const str = String(mfgVal).replace(/(?:mfg|mfd|exp|best before|use by)\s*[:\-.]?\s*/gi, '').trim();
+    const dmy = str.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+    const my = str.match(/^(\d{1,2})[\/\-\.](\d{2,4})$/);
+    let isFuture = false;
+    if (dmy) {
+      let yr = parseInt(dmy[3], 10);
+      if (yr < 100) yr += 2000;
+      isFuture = new Date(yr, parseInt(dmy[2], 10) - 1, parseInt(dmy[1], 10)) > new Date();
+    } else if (my) {
+      let yr = parseInt(my[2], 10);
+      if (yr < 100) yr += 2000;
+      isFuture = new Date(yr, parseInt(my[1], 10), 0) > new Date();
+    } else if (/\b202[7-9]\b|\b203\d\b/.test(str)) {
+      isFuture = true;
+    }
+
+    if (isFuture) {
+      // Future date (e.g. 23/01/2027) -> belongs ONLY to Use By / Expiry Date!
+      mfgVal = null;
+    } else {
+      // Past date -> belongs ONLY to Manufacturing Date!
+      expVal = null;
+    }
+  } else if (mfgVal && !expVal) {
+    const str = String(mfgVal).replace(/(?:mfg|mfd|exp|best before|use by)\s*[:\-.]?\s*/gi, '').trim();
+    if (/\b202[7-9]\b|\b203\d\b/.test(str)) {
+      expVal = mfgVal;
+      mfgVal = null;
+    }
+  }
+
   const declarations = [
     makeDecl('productName', 'Product Name / Commodity', fullProductName, 'Rule 6(1)(b)', fullProductName),
     makeDecl('manufacturer', 'Manufacturer', parsed.manufacturer, 'Rule 6(1)(a)', parsed.manufacturer),
@@ -144,8 +189,8 @@ Return ONLY a valid JSON object matching this schema:
     makeDecl('importer', 'Importer', parsed.importer, 'Rule 6(1)(a)', parsed.importer),
     makeDecl('netQuantity', 'Net Quantity', parsed.netQuantity, 'Rule 6(1)(c)', parsed.netQuantity),
     makeDecl('mrp', 'MRP (Maximum Retail Price)', parsed.mrp, 'Rule 6(1)(e)', parsed.mrp),
-    makeDecl('manufacturingDate', 'Manufacturing / Packing Date', parsed.manufacturingDate, 'Rule 6(1)(d)', parsed.manufacturingDate),
-    makeDecl('bestBefore', 'Best Before / Expiry Date', parsed.bestBefore, 'Rule 6(1)(d) proviso', parsed.bestBefore),
+    makeDecl('manufacturingDate', 'Manufacturing / Packing Date', mfgVal, 'Rule 6(1)(d)', mfgVal),
+    makeDecl('bestBefore', 'Best Before / Expiry Date', expVal, 'Rule 6(1)(d) proviso', expVal),
     makeDecl('countryOfOrigin', 'Country of Origin', countryVal, 'Rule 6(1)(g)', countryVal),
     makeDecl('consumerCare', 'Consumer Care Details', parsed.consumerCare, 'Rule 6(1)(n)', parsed.consumerCare),
     makeDecl('unitSalePrice', 'Unit Sale Price', parsed.unitSalePrice, 'Rule 6(1)(h)', parsed.unitSalePrice),
