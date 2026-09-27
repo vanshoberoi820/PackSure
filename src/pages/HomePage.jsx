@@ -90,28 +90,28 @@ export default function HomePage() {
           {[
             {
               icon: ClipboardCheck,
-              value: stats.total || 124,
+              value: stats.total || 0,
               label: 'Inspections',
               color: 'text-primary-600',
               bg: 'bg-primary-50',
             },
             {
               icon: CheckCircle2,
-              value: stats.compliant || 89,
+              value: stats.compliant || 0,
               label: 'Compliant',
               color: 'text-emerald-600',
               bg: 'bg-emerald-50',
             },
             {
               icon: AlertTriangle,
-              value: stats.needsReview || 21,
+              value: stats.needsReview || 0,
               label: 'Review',
               color: 'text-amber-600',
               bg: 'bg-amber-50',
             },
             {
               icon: XCircle,
-              value: stats.violations || 14,
+              value: stats.violations || 0,
               label: 'Violations',
               color: 'text-rose-600',
               bg: 'bg-rose-50',
