@@ -270,6 +270,8 @@ export async function saveInspectionToCloud(inspection) {
     const brand = inspection.declarations?.find((d) => d.field === 'brand')?.value || '';
     const barcode = inspection.detectedBarcodes?.[0] || '';
 
+    const creatorId = currentUser?.id || inspection.creatorId || inspection.creator_id || 'PS-CIT-00001';
+
     const inspectionPayload = {
       id: inspection.id,
       product_name: inspection.productName || 'Unknown Product',
@@ -284,6 +286,7 @@ export async function saveInspectionToCloud(inspection) {
       country_of_origin: countryOfOrigin || null,
       manufacturer_address: manufacturerAddress || null,
       product_image_url: inspection.productImage || null,
+      creator_id: creatorId,
       detected_declarations: {
         declarations: inspection.declarations || [],
         compliance: inspection.compliance || {},
@@ -293,18 +296,30 @@ export async function saveInspectionToCloud(inspection) {
         officerReview: inspection.officerReview || {},
         comparison: inspection.comparison || null,
         detectedBarcodes: inspection.detectedBarcodes || [],
-        creatorId: currentUser?.id || 'PS-INS-94210',
-        creatorRole: currentUser?.role || 'inspector',
+        creatorId: creatorId,
+        creatorRole: currentUser?.role || 'citizen',
       },
-      created_by: currentUser?.name ? `${currentUser.name} (${currentUser.id})` : (inspection.createdBy || 'Legal Metrology Officer'),
+      created_by: currentUser?.name ? `${currentUser.name} (${creatorId})` : (inspection.createdBy || `Citizen (${creatorId})`),
       created_at: inspection.createdAt || new Date().toISOString(),
     };
 
-    const { data: savedInspection, error: inspError } = await supabase
+    let { data: savedInspection, error: inspError } = await supabase
       .from('inspections')
       .upsert(inspectionPayload, { onConflict: 'id' })
       .select()
       .single();
+
+    if (inspError && (inspError.code === 'PGRST204' || inspError.message?.includes('creator_id'))) {
+      // Graceful fallback if creator_id column has not been added via SQL yet
+      const { creator_id, ...fallbackPayload } = inspectionPayload;
+      const res = await supabase
+        .from('inspections')
+        .upsert(fallbackPayload, { onConflict: 'id' })
+        .select()
+        .single();
+      savedInspection = res.data;
+      inspError = res.error;
+    }
 
     if (inspError) {
       console.warn('Supabase inspection upsert error:', inspError);
@@ -385,7 +400,8 @@ export async function fetchInspectionsFromCloud(forUser = null) {
         status: row.status,
         productImage: row.product_image_url,
         createdAt: row.created_at,
-        creatorId: extra.creatorId || currentUser.id,
+        creatorId: row.creator_id || extra.creatorId || currentUser.id,
+        creator_id: row.creator_id || extra.creatorId || currentUser.id,
         createdBy: row.created_by,
         ocrText: extra.ocrText || '',
         ocrConfidence: extra.ocrConfidence || 0,
