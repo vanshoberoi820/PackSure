@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, ScanLine, ChevronRight, ClipboardList, Filter } from 'lucide-react';
-import { getInspections } from '../utils/storage';
+import { getInspections, syncWithCloudDatabase } from '../utils/storage';
 import StatusBadge from '../components/StatusBadge';
 import ScoreCircle from '../components/ScoreCircle';
 
@@ -15,8 +15,14 @@ export default function InspectionsPage() {
   useEffect(() => {
     const loadInspections = async () => {
       try {
-        const data = await getInspections();
-        // Sort newest first
+        // First show local instant cache
+        const localData = getInspections();
+        if (localData && localData.length > 0) {
+          setInspections((localData || []).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)));
+        }
+
+        // Then sync latest from cloud
+        const data = await syncWithCloudDatabase();
         const sorted = (data || []).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
         setInspections(sorted);
       } catch (error) {

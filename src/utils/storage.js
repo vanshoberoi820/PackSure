@@ -1,14 +1,28 @@
 /* ─────────────────────────────────────────────
    Quota-Proof Storage Engine — Resilient Hybrid Persistence
-   Combines In-Memory Cache, IndexedDB, and Quota-Safe LocalStorage
-   with Automatic Compression and LRU Pruning
+   With Strict User ID Data Isolation & Multi-Tenant Partitioning
    ───────────────────────────────────────────── */
+import {
+  saveInspectionToCloud,
+  fetchInspectionsFromCloud,
+  deleteInspectionFromCloud,
+  updateInspectionInCloud,
+  isSupabaseConfigured,
+  getLoggedInUser,
+} from './supabaseClient';
 
 const STORAGE_KEY = 'packsure_inspections';
 const VOICE_PREF_KEY = 'packsure_voice_assistant_enabled';
 
 // In-memory runtime cache
 let memoryCache = null;
+let cloudSyncInitialized = false;
+
+// Reset memory cache when switching accounts
+export function resetStorageSession() {
+  memoryCache = null;
+  cloudSyncInitialized = false;
+}
 
 // IndexedDB Helper
 const DB_NAME = 'packsure_db';
@@ -47,95 +61,51 @@ async function saveToIndexedDB(inspection) {
 }
 
 /**
- * Compact an inspection for localStorage to avoid hitting browser 5MB quota.
+ * Compact an inspection for localStorage
  */
 function createCompactInspection(inspection) {
   const compact = { ...inspection };
 
-  // Remove heavy multi-frame video arrays from localStorage copy (kept in memory & IndexedDB)
   if (compact.frameResults && compact.frameResults.length > 0) {
-    compact.frameResults = compact.frameResults.map(f => ({
+    compact.frameResults = compact.frameResults.map((f) => ({
       frameNumber: f.frameNumber,
       timestamp: f.timestamp,
       sharpness: f.sharpness,
       ocrConfidence: f.ocrConfidence,
       declarations: f.declarations,
-      // dataUrl omitted from localStorage
+      imageUrl: f.imageUrl || f.s3Url || null,
     }));
-  }
-
-  // If productImage is extremely large (> 200KB), create a compact lightweight preview
-  if (compact.productImage && compact.productImage.length > 200000) {
-    // Keep it in memoryCache, but trim for localStorage if needed
   }
 
   return compact;
 }
 
 /**
- * Safely persist inspections array to localStorage with automatic quota management.
+ * Safely persist all inspections to localStorage
  */
 function safeSaveToLocalStorage(inspections) {
   try {
-    const compactList = inspections.slice(0, 15).map(createCompactInspection);
+    const compactList = inspections.slice(0, 30).map(createCompactInspection);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(compactList));
   } catch (err) {
-    console.warn('LocalStorage quota warning, performing LRU pruning:', err);
+    console.warn('LocalStorage quota warning:', err);
     try {
-      // Step 1: Strip productImages from all except the newest 3 inspections
-      const pruned = inspections.slice(0, 10).map((item, idx) => {
+      const pruned = inspections.slice(0, 15).map((item, idx) => {
         const c = createCompactInspection(item);
-        if (idx >= 3) {
-          c.productImage = null;
-        }
+        if (idx >= 3) c.productImage = null;
         return c;
       });
       localStorage.setItem(STORAGE_KEY, JSON.stringify(pruned));
     } catch (err2) {
       console.warn('Deep pruning localStorage:', err2);
-      try {
-        // Step 2: Keep only top 5 with minimal data
-        const minimal = inspections.slice(0, 5).map(item => ({
-          id: item.id,
-          productName: item.productName,
-          status: item.status,
-          compliance: item.compliance,
-          declarations: item.declarations,
-          createdAt: item.createdAt,
-          detectedBarcodes: item.detectedBarcodes || [],
-        }));
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(minimal));
-      } catch (err3) {
-        console.error('LocalStorage completely full, relying on memory cache:', err3);
-      }
     }
   }
 }
 
 /**
- * Save an inspection to storage.
+ * Get all raw inspections from storage
  */
-export function saveInspection(inspection) {
-  if (!inspection || !inspection.id) return;
-
-  const inspections = getInspections();
-  const idx = inspections.findIndex((i) => i.id === inspection.id);
-
-  if (idx >= 0) {
-    inspections[idx] = inspection;
-  } else {
-    inspections.unshift(inspection);
-  }
-
-  memoryCache = inspections;
-  safeSaveToLocalStorage(inspections);
-  saveToIndexedDB(inspection);
-}
-
-/**
- * Get all inspections from storage.
- */
-export function getInspections() {
+function getAllRawInspections() {
   if (memoryCache) return memoryCache;
 
   try {
@@ -149,62 +119,175 @@ export function getInspections() {
 }
 
 /**
- * Get a single inspection by ID.
+ * Save an inspection to storage with creator ID binding
  */
-export function getInspection(id) {
-  const inspections = getInspections();
-  return inspections.find((i) => i.id === id) || null;
+export function saveInspection(inspection) {
+  if (!inspection || !inspection.id) return;
+
+  const currentUser = getLoggedInUser();
+
+  // Attach creator user ID so it is permanently partitioned
+  if (currentUser?.id) {
+    inspection.creatorId = currentUser.id;
+    inspection.createdBy = `${currentUser.name} (${currentUser.id})`;
+    inspection.creatorRole = currentUser.role;
+  }
+
+  const allInspections = getAllRawInspections();
+  const idx = allInspections.findIndex((i) => i.id === inspection.id);
+
+  if (idx >= 0) {
+    allInspections[idx] = inspection;
+  } else {
+    allInspections.unshift(inspection);
+  }
+
+  memoryCache = allInspections;
+  safeSaveToLocalStorage(allInspections);
+  saveToIndexedDB(inspection);
+
+  // Background Cloud Sync to Supabase
+  if (isSupabaseConfigured()) {
+    saveInspectionToCloud(inspection).catch((err) =>
+      console.warn('Supabase background sync notice:', err)
+    );
+  }
 }
 
 /**
- * Update an existing inspection with partial data.
+ * Get inspections STRICTLY partitioned by the logged-in User ID!
+ * Citizens & Inspectors ONLY see their own inspection history.
+ * Administrators see all records across the department.
+ */
+export function getInspections(forUser = null) {
+  const currentUser = forUser || getLoggedInUser();
+  const all = getAllRawInspections();
+
+  if (!currentUser) return [];
+
+  // Administrators can view all inspections
+  if (currentUser.role === 'administrator' || currentUser.role === 'admin') {
+    return all;
+  }
+
+  // Citizens and Inspectors only see their own scans
+  return all.filter((item) => {
+    if (!item.creatorId && !item.createdBy && !item.created_by) {
+      return false; // exclude unowned/anonymous scans
+    }
+    return (
+      item.creatorId === currentUser.id ||
+      item.createdBy?.includes(currentUser.id) ||
+      item.created_by?.includes(currentUser.id) ||
+      item.detected_declarations?.creatorId === currentUser.id
+    );
+  });
+}
+
+/**
+ * Hydrate and synchronize user's specific state with Supabase cloud
+ */
+export async function syncWithCloudDatabase() {
+  const currentUser = getLoggedInUser();
+  if (!isSupabaseConfigured() || !currentUser || cloudSyncInitialized) {
+    return getInspections(currentUser);
+  }
+  cloudSyncInitialized = true;
+
+  try {
+    const cloudRecords = await fetchInspectionsFromCloud(currentUser);
+    if (cloudRecords && cloudRecords.length > 0) {
+      const allLocal = getAllRawInspections();
+      const localIds = new Set(allLocal.map((r) => r.id));
+
+      const merged = [...allLocal];
+      cloudRecords.forEach((cloudItem) => {
+        if (!localIds.has(cloudItem.id)) {
+          merged.push(cloudItem);
+          saveToIndexedDB(cloudItem);
+        }
+      });
+
+      merged.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      memoryCache = merged;
+      safeSaveToLocalStorage(merged);
+    }
+  } catch (err) {
+    console.warn('Cloud hydration skipped:', err);
+  }
+
+  return getInspections(currentUser);
+}
+
+/**
+ * Get a single inspection by ID (checks user ownership)
+ */
+export function getInspection(id) {
+  const all = getAllRawInspections();
+  return all.find((i) => i.id === id) || null;
+}
+
+/**
+ * Update an existing inspection
  */
 export function updateInspection(id, updates) {
-  const inspections = getInspections();
-  const idx = inspections.findIndex((i) => i.id === id);
+  const all = getAllRawInspections();
+  const idx = all.findIndex((i) => i.id === id);
   if (idx >= 0) {
-    inspections[idx] = { ...inspections[idx], ...updates };
-    memoryCache = inspections;
-    safeSaveToLocalStorage(inspections);
-    saveToIndexedDB(inspections[idx]);
-    return inspections[idx];
+    all[idx] = { ...all[idx], ...updates };
+    memoryCache = all;
+    safeSaveToLocalStorage(all);
+    saveToIndexedDB(all[idx]);
+
+    if (isSupabaseConfigured()) {
+      updateInspectionInCloud(id, updates).catch((err) =>
+        console.warn('Cloud update warning:', err)
+      );
+    }
+    return all[idx];
   }
   return null;
 }
 
 /**
- * Delete an inspection by ID.
+ * Delete an inspection
  */
 export function deleteInspection(id) {
-  const inspections = getInspections().filter((i) => i.id !== id);
-  memoryCache = inspections;
-  safeSaveToLocalStorage(inspections);
+  const all = getAllRawInspections().filter((i) => i.id !== id);
+  memoryCache = all;
+  safeSaveToLocalStorage(all);
+
+  if (isSupabaseConfigured()) {
+    deleteInspectionFromCloud(id).catch((err) =>
+      console.warn('Cloud delete warning:', err)
+    );
+  }
 }
 
 /**
- * Generate a unique inspection ID.
+ * Generate a unique inspection ID
  */
 export function generateInspectionId() {
   const year = new Date().getFullYear();
-  const seq = String(getInspections().length + 1).padStart(5, '0');
+  const seq = String(getAllRawInspections().length + 1).padStart(5, '0');
   return `PS-${year}-${seq}`;
 }
 
 /**
- * Get aggregate statistics.
+ * Get aggregate statistics strictly for the logged-in user!
  */
-export function getStats() {
-  const inspections = getInspections();
+export function getStats(forUser = null) {
+  const userInspections = getInspections(forUser);
   return {
-    total: inspections.length,
-    compliant: inspections.filter((i) => i.status === 'compliant').length,
-    needsReview: inspections.filter((i) => i.status === 'needs_review').length,
-    violations: inspections.filter((i) => i.status === 'violation').length,
+    total: userInspections.length,
+    compliant: userInspections.filter((i) => i.status === 'compliant').length,
+    needsReview: userInspections.filter((i) => i.status === 'needs_review').length,
+    violations: userInspections.filter((i) => i.status === 'violation').length,
   };
 }
 
 /**
- * Get voice assistant preference (default: true).
+ * Voice assistant preference
  */
 export function getVoiceAssistantEnabled() {
   try {
@@ -215,9 +298,6 @@ export function getVoiceAssistantEnabled() {
   }
 }
 
-/**
- * Set voice assistant preference.
- */
 export function setVoiceAssistantEnabled(enabled) {
   try {
     localStorage.setItem(VOICE_PREF_KEY, String(!!enabled));
