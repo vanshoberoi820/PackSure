@@ -1,7 +1,22 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, FileText, CheckCircle, ShieldAlert, ArrowRight, ShieldCheck, ShoppingCart, Calendar, Clock, Barcode, QrCode, CheckCircle2 } from 'lucide-react';
-import { getInspection } from '../utils/storage';
+import {
+  ArrowLeft,
+  FileText,
+  CheckCircle,
+  ShieldAlert,
+  ArrowRight,
+  ShieldCheck,
+  ShoppingCart,
+  Calendar,
+  Clock,
+  Barcode,
+  QrCode,
+  CheckCircle2,
+  Trash2,
+  AlertTriangle,
+} from 'lucide-react';
+import { getInspection, deleteInspection } from '../utils/storage';
 import { generateReport } from '../engine/reportEngine';
 import { evaluateDateCompliance } from '../engine/complianceEngine';
 import ScoreCircle from '../components/ScoreCircle';
@@ -14,6 +29,7 @@ export default function ResultPage() {
   const navigate = useNavigate();
   const [inspection, setInspection] = useState(null);
   const [generatingPdf, setGeneratingPdf] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   useEffect(() => {
     const data = getInspection(id);
@@ -49,6 +65,11 @@ export default function ResultPage() {
     }
   };
 
+  const handleDelete = () => {
+    deleteInspection(id);
+    navigate('/inspections', { replace: true });
+  };
+
   const handleFieldClick = (decl) => {
     navigate(`/evidence/${id}`, { state: { focusField: decl.field } });
   };
@@ -66,7 +87,16 @@ export default function ResultPage() {
             <p className="text-[10px] text-gray-400 font-medium">{id}</p>
           </div>
         </div>
-        <StatusBadge status={status} size="sm" />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowDeleteModal(true)}
+            className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"
+            title="Delete this inspection"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+          <StatusBadge status={status} size="sm" />
+        </div>
       </div>
 
       {/* Main Content */}
@@ -328,6 +358,36 @@ export default function ResultPage() {
           </button>
         </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl p-6 max-w-xs w-full shadow-2xl border border-slate-100 text-center animate-scale-up">
+            <div className="w-12 h-12 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-rose-100">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            <h3 className="text-base font-bold text-slate-900 mb-1">Delete Inspection?</h3>
+            <p className="text-xs text-slate-500 mb-6 leading-relaxed">
+              Are you sure you want to delete inspection <span className="font-mono font-bold text-slate-800">{id}</span>? This action cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowDeleteModal(false)}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 text-slate-700 font-bold text-xs hover:bg-slate-50 active:scale-95 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDelete}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 text-white font-bold text-xs hover:bg-rose-700 shadow-md shadow-rose-200 active:scale-95 transition-all flex items-center justify-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

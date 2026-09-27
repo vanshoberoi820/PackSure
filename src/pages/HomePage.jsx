@@ -90,28 +90,28 @@ export default function HomePage() {
           {[
             {
               icon: ClipboardCheck,
-              value: stats.total || 0,
+              value: stats.total > 0 ? stats.total : null,
               label: 'Inspections',
               color: 'text-primary-600',
               bg: 'bg-primary-50',
             },
             {
               icon: CheckCircle2,
-              value: stats.compliant || 0,
+              value: stats.compliant > 0 ? stats.compliant : null,
               label: 'Compliant',
               color: 'text-emerald-600',
               bg: 'bg-emerald-50',
             },
             {
               icon: AlertTriangle,
-              value: stats.needsReview || 0,
+              value: stats.needsReview > 0 ? stats.needsReview : null,
               label: 'Review',
               color: 'text-amber-600',
               bg: 'bg-amber-50',
             },
             {
               icon: XCircle,
-              value: stats.violations || 0,
+              value: stats.violations > 0 ? stats.violations : null,
               label: 'Violations',
               color: 'text-rose-600',
               bg: 'bg-rose-50',
@@ -121,13 +121,17 @@ export default function HomePage() {
             return (
               <div
                 key={stat.label}
-                className="bg-white rounded-2xl p-3 shadow-sm border border-gray-100 text-center"
+                className="bg-white rounded-2xl p-3 shadow-sm border border-gray-100 text-center flex flex-col items-center justify-center min-h-[90px]"
               >
-                <div className={`w-8 h-8 ${stat.bg} rounded-lg flex items-center justify-center mx-auto mb-2`}>
+                <div className={`w-8 h-8 ${stat.bg} rounded-lg flex items-center justify-center mb-1.5`}>
                   <Icon className={`w-4 h-4 ${stat.color}`} />
                 </div>
-                <p className="text-lg font-bold text-gray-900">{stat.value}</p>
-                <p className="text-[10px] text-gray-500 font-medium">{stat.label}</p>
+                {stat.value ? (
+                  <p className="text-base font-bold text-gray-900 leading-tight">{stat.value}</p>
+                ) : (
+                  <span className="text-xs font-semibold text-gray-300 leading-tight">—</span>
+                )}
+                <p className="text-[10px] text-gray-500 font-medium mt-0.5">{stat.label}</p>
               </div>
             );
           })}

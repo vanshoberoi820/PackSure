@@ -425,6 +425,18 @@ export async function deleteInspectionFromCloud(id) {
 }
 
 /**
+ * Delete multiple inspections from Supabase Cloud Database in batch.
+ */
+export async function deleteInspectionsFromCloud(ids) {
+  if (!supabase || !ids || ids.length === 0) return;
+  try {
+    await supabase.from('inspections').delete().in('id', ids);
+  } catch (err) {
+    console.warn('Supabase bulk delete error:', err);
+  }
+}
+
+/**
  * Update an inspection in Supabase Cloud Database.
  */
 export async function updateInspectionInCloud(id, updates) {

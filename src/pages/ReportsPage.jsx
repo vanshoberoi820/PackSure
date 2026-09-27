@@ -64,11 +64,11 @@ export default function ReportsPage() {
         <div className="flex space-x-3">
           <div className="bg-blue-500/30 rounded-xl p-3 flex-1 border border-blue-400/30 backdrop-blur-sm text-white">
             <div className="text-blue-100 text-xs font-medium mb-1 uppercase tracking-wider">Total</div>
-            <div className="text-2xl font-bold">{reports.length}</div>
+            <div className="text-2xl font-bold">{reports.length > 0 ? reports.length : '—'}</div>
           </div>
           <div className="bg-blue-500/30 rounded-xl p-3 flex-1 border border-blue-400/30 backdrop-blur-sm text-white">
             <div className="text-blue-100 text-xs font-medium mb-1 uppercase tracking-wider">This Month</div>
-            <div className="text-2xl font-bold">{thisMonth}</div>
+            <div className="text-2xl font-bold">{thisMonth > 0 ? thisMonth : '—'}</div>
           </div>
         </div>
       </div>

@@ -93,15 +93,15 @@ export default function ProfilePage() {
         {/* Stats Row */}
         <div className="grid grid-cols-3 gap-3 bg-slate-50 rounded-xl p-3 border border-slate-100">
           <div className="text-center">
-            <div className="text-xl font-bold text-slate-800">{stats.total}</div>
+            <div className="text-xl font-bold text-slate-800">{stats.total > 0 ? stats.total : '—'}</div>
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-medium">Inspections</div>
           </div>
           <div className="text-center border-l border-r border-slate-200">
-            <div className="text-xl font-bold text-slate-800">{successRate}%</div>
+            <div className="text-xl font-bold text-slate-800">{stats.total > 0 ? `${successRate}%` : '—'}</div>
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-medium">Verified Rate</div>
           </div>
           <div className="text-center">
-            <div className="text-xl font-bold text-emerald-600">{stats.compliant}</div>
+            <div className="text-xl font-bold text-emerald-600">{stats.compliant > 0 ? stats.compliant : '—'}</div>
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-medium">Compliant</div>
           </div>
         </div>

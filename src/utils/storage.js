@@ -6,6 +6,7 @@ import {
   saveInspectionToCloud,
   fetchInspectionsFromCloud,
   deleteInspectionFromCloud,
+  deleteInspectionsFromCloud,
   updateInspectionInCloud,
   isSupabaseConfigured,
   getLoggedInUser,
@@ -250,16 +251,38 @@ export function updateInspection(id, updates) {
 }
 
 /**
- * Delete an inspection
+ * Delete a single inspection
  */
 export function deleteInspection(id) {
-  const all = getAllRawInspections().filter((i) => i.id !== id);
+  if (!id) return;
+  deleteInspections([id]);
+}
+
+/**
+ * Delete multiple inspections by ID array
+ */
+export function deleteInspections(ids) {
+  if (!ids || ids.length === 0) return;
+  const idSet = new Set(ids);
+  const all = getAllRawInspections().filter((i) => !idSet.has(i.id));
   memoryCache = all;
   safeSaveToLocalStorage(all);
 
+  // Also remove from IndexedDB
+  openIndexedDB().then((db) => {
+    if (!db) return;
+    try {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      ids.forEach((id) => store.delete(id));
+    } catch (e) {
+      console.warn('IndexedDB delete skipped:', e);
+    }
+  });
+
   if (isSupabaseConfigured()) {
-    deleteInspectionFromCloud(id).catch((err) =>
-      console.warn('Cloud delete warning:', err)
+    deleteInspectionsFromCloud(ids).catch((err) =>
+      console.warn('Cloud bulk delete warning:', err)
     );
   }
 }
