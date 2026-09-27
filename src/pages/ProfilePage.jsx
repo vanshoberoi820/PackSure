@@ -1,19 +1,34 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Settings, Bell, Moon, Globe, Info, LogOut, Shield, Award, ChevronRight, Volume2, Bot } from 'lucide-react';
-import { getStats, getVoiceAssistantEnabled, setVoiceAssistantEnabled } from '../utils/storage';
+import {
+  Bell,
+  Moon,
+  Globe,
+  Info,
+  LogOut,
+  Award,
+  ChevronRight,
+  Bot,
+  BadgeCheck,
+  ShoppingBag,
+  ShieldAlert,
+} from 'lucide-react';
+import { getStats, getVoiceAssistantEnabled, setVoiceAssistantEnabled, resetStorageSession } from '../utils/storage';
+import { getLoggedInUser, authService } from '../utils/supabaseClient';
 import logo from '../assets/logo.png';
 
 export default function ProfilePage() {
   const navigate = useNavigate();
   const [stats, setStats] = useState({ total: 0, compliant: 0, violations: 0, needsReview: 0 });
   const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [userProfile, setUserProfile] = useState(() => getLoggedInUser());
 
   useEffect(() => {
     const loadStats = async () => {
       const data = await getStats();
       if (data) setStats(data);
       setVoiceEnabled(getVoiceAssistantEnabled());
+      setUserProfile(getLoggedInUser());
     };
     loadStats();
   }, []);
@@ -24,29 +39,53 @@ export default function ProfilePage() {
     setVoiceAssistantEnabled(nextVal);
   };
 
-  const successRate = stats.total > 0 
-    ? Math.round(((stats.compliant + stats.violations) / stats.total) * 100) 
-    : 100; // 100% success if no inspections, or 0% depending on interpretation
+  const successRate =
+    stats.total > 0
+      ? Math.round(((stats.compliant + stats.violations) / stats.total) * 100)
+      : 100;
 
-  const handleLogout = () => {
-    // In a real app, clear auth tokens here
+  const handleLogout = async () => {
+    resetStorageSession();
+    await authService.signOut();
     navigate('/login', { replace: true });
   };
+
+  const getRoleIcon = () => {
+    switch (userProfile.role?.toLowerCase()) {
+      case 'consumer':
+        return ShoppingBag;
+      case 'admin':
+        return ShieldAlert;
+      default:
+        return BadgeCheck;
+    }
+  };
+
+  const RoleIcon = getRoleIcon();
 
   return (
     <div className="max-w-md mx-auto min-h-screen bg-slate-50 pb-nav">
       {/* Profile Header */}
       <div className="bg-white pt-8 pb-6 px-4 border-b border-slate-200 shadow-sm">
-        <div className="flex items-center space-x-4 mb-6">
-          <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-lg border-4 border-blue-50 overflow-hidden p-2">
+        <div className="flex items-center space-x-4 mb-5">
+          <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center shadow-lg border-2 border-slate-100 overflow-hidden p-2">
             <img src={logo} alt="PackSure Logo" className="w-full h-full object-contain" />
           </div>
-          <div>
-            <h1 className="text-xl font-bold text-slate-900">Rajesh Kumar</h1>
-            <p className="text-slate-500 text-sm mb-1">Legal Metrology Inspector</p>
-            <div className="inline-flex items-center bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md text-xs font-semibold border border-indigo-100">
-              <Shield className="w-3 h-3 mr-1" />
-              Grade-II Officer
+          <div className="flex-1 min-w-0">
+            <h1 className="text-lg font-bold text-slate-900 truncate">
+              {userProfile.name || 'Legal Metrology Officer'}
+            </h1>
+            <p className="text-slate-500 text-xs truncate mb-1">
+              {userProfile.roleLabel || 'Legal Metrology Inspector'}
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="inline-flex items-center bg-blue-50 text-blue-700 px-2.5 py-0.5 rounded-lg text-[11px] font-bold border border-blue-200/60 font-mono">
+                <RoleIcon className="w-3 h-3 mr-1 text-blue-600" />
+                {userProfile.id || 'PS-INS-00001'}
+              </span>
+              <span className="text-[10px] text-slate-400 capitalize px-1.5 py-0.5 bg-slate-100 rounded-md">
+                {userProfile.authProvider || 'Verified'}
+              </span>
             </div>
           </div>
         </div>
@@ -59,22 +98,22 @@ export default function ProfilePage() {
           </div>
           <div className="text-center border-l border-r border-slate-200">
             <div className="text-xl font-bold text-slate-800">{successRate}%</div>
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-medium">Success Rate</div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-medium">Verified Rate</div>
           </div>
           <div className="text-center">
-            <div className="text-xl font-bold text-slate-800">3 yrs</div>
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-medium">Experience</div>
+            <div className="text-xl font-bold text-emerald-600">{stats.compliant}</div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-medium">Compliant</div>
           </div>
         </div>
       </div>
 
-      <div className="p-4 space-y-6">
+      <div className="p-4 space-y-5">
         {/* Settings Group */}
         <div>
           <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 px-1">App Settings</h2>
           <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
             {/* Voice Assistant Toggle */}
-            <div 
+            <div
               onClick={handleToggleVoice}
               className="flex items-center justify-between p-4 border-b border-slate-50 cursor-pointer hover:bg-slate-50/70 transition-colors"
             >
@@ -101,7 +140,7 @@ export default function ProfilePage() {
                 <div className="absolute right-1 top-1 bg-white w-4 h-4 rounded-full shadow-sm"></div>
               </div>
             </div>
-            
+
             <div className="flex items-center justify-between p-4 border-b border-slate-50">
               <div className="flex items-center">
                 <Moon className="w-5 h-5 text-slate-400 mr-3" />
@@ -118,12 +157,11 @@ export default function ProfilePage() {
                 <span className="text-slate-700 font-medium text-sm">Language</span>
               </div>
               <div className="flex items-center text-slate-400">
-                <span className="text-sm mr-2 text-slate-500">English</span>
+                <span className="text-sm mr-2 text-slate-500">English / Hindi</span>
                 <ChevronRight className="w-4 h-4" />
               </div>
             </div>
 
-            
             <div className="flex items-center justify-between p-4 cursor-pointer hover:bg-slate-50 transition-colors">
               <div className="flex items-center">
                 <Info className="w-5 h-5 text-slate-400 mr-3" />
@@ -135,7 +173,7 @@ export default function ProfilePage() {
         </div>
 
         {/* Legal Resource */}
-        <div 
+        <div
           className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl p-4 text-white shadow-md flex items-center justify-between cursor-pointer"
         >
           <div className="flex items-center">
@@ -143,22 +181,22 @@ export default function ProfilePage() {
               <Award className="w-6 h-6 text-white" />
             </div>
             <div>
-              <h3 className="font-bold">Legal Metrology Rules</h3>
-              <p className="text-blue-100 text-sm">Packaged Commodities 2011</p>
+              <h3 className="font-bold text-sm">Legal Metrology Rules</h3>
+              <p className="text-blue-100 text-xs">Packaged Commodities 2011</p>
             </div>
           </div>
           <ChevronRight className="w-5 h-5 text-white/70" />
         </div>
 
         {/* Logout */}
-        <button 
+        <button
           onClick={handleLogout}
-          className="w-full flex items-center justify-center p-4 bg-white text-red-600 font-bold rounded-xl shadow-sm border border-red-50 hover:bg-red-50 transition-colors"
+          className="w-full flex items-center justify-center p-3.5 bg-white text-rose-600 font-bold rounded-xl shadow-sm border border-rose-100 hover:bg-rose-50 transition-colors text-sm"
         >
-          <LogOut className="w-5 h-5 mr-2" />
-          Log Out
+          <LogOut className="w-4 h-4 mr-2" />
+          Log Out ({userProfile.id})
         </button>
-        
+
         <div className="text-center pb-6">
           <p className="text-xs text-slate-400 font-mono">PackSure v1.0.0 — SIH 2026 Prototype</p>
         </div>

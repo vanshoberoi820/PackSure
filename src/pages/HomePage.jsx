@@ -1,5 +1,7 @@
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getStats, getInspections } from '../utils/storage';
+import { getStats, getInspections, syncWithCloudDatabase } from '../utils/storage';
+import { getLoggedInUser } from '../utils/supabaseClient';
 import StatusBadge from '../components/StatusBadge';
 import logo from '../assets/logo.png';
 import {
@@ -11,12 +13,22 @@ import {
   ChevronRight,
   Shield,
   TrendingUp,
+  BadgeCheck,
 } from 'lucide-react';
 
 export default function HomePage() {
   const navigate = useNavigate();
-  const stats = getStats();
-  const inspections = getInspections().slice(0, 5);
+  const [stats, setStats] = useState(() => getStats());
+  const [inspections, setInspections] = useState(() => getInspections().slice(0, 5));
+  const [user, setUser] = useState(() => getLoggedInUser());
+
+  useEffect(() => {
+    setUser(getLoggedInUser());
+    syncWithCloudDatabase().then(() => {
+      setStats(getStats());
+      setInspections(getInspections().slice(0, 5));
+    }).catch(() => {});
+  }, []);
 
   const greeting = () => {
     const h = new Date().getHours();
@@ -25,18 +37,26 @@ export default function HomePage() {
     return 'Good Evening';
   };
 
+  const displayName = user?.name ? user.name.split(' ')[0] : 'Officer';
+
   return (
     <div className="min-h-screen bg-gray-50 pb-nav">
       {/* Header */}
       <div className="bg-gradient-to-br from-primary-600 to-primary-800 px-5 pt-12 pb-20 rounded-b-3xl">
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-white/15 backdrop-blur-sm rounded-xl flex items-center justify-center">
               <Shield className="w-5 h-5 text-white" />
             </div>
             <div>
-              <p className="text-primary-100 text-xs font-medium">PackSure</p>
-              <p className="text-white text-sm font-semibold">Not just label inspection — legal compliance verification.
+              <div className="flex items-center gap-1.5">
+                <p className="text-white text-sm font-bold truncate max-w-[170px]">{user?.name || 'PackSure'}</p>
+                <span className="text-[10px] font-mono font-bold bg-white/20 text-white px-2 py-0.5 rounded-full border border-white/30">
+                  {user?.id || 'PS-INS-00001'}
+                </span>
+              </div>
+              <p className="text-primary-200 text-xs font-medium capitalize">
+                {user?.roleLabel || 'Legal Metrology Inspector'}
               </p>
             </div>
           </div>
@@ -49,9 +69,9 @@ export default function HomePage() {
           </button>
         </div>
 
-        <h1 className="text-2xl font-bold text-white">{greeting()} 👋</h1>
-        <p className="text-primary-200 text-sm mt-1">
-          Ready to inspect a product?
+        <h1 className="text-2xl font-bold text-white">{greeting()}, {displayName}! 👋</h1>
+        <p className="text-primary-200 text-xs mt-1">
+          Ready to verify packaged commodity compliance?
         </p>
 
         {/* Primary CTA */}
