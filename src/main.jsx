@@ -3,6 +3,10 @@ import ReactDOM from 'react-dom/client';
 import { HashRouter } from 'react-router-dom';
 import App from './App';
 import './index.css';
+import { initSecurityGuard } from './utils/securityGuard';
+
+// Initialize Anti-Inspect & DevTools Security Guard
+initSecurityGuard();
 
 // Remove splash screen
 const splash = document.getElementById('splash');
